@@ -1,0 +1,4 @@
+/target
+*.perfetto-trace
+*.json
+mise.toml

@@ -1,5 +1,5 @@
 [package]
-name = "rust"
+name = "fractal-renderer-vk"
 version = "0.1.0"
 edition = "2024"
 
@@ -21,7 +21,8 @@ opt-level = 1
 [profile.release]
 opt-level = 3
 lto = true
+debug = 1
 
 [[bin]]
-name = "rust"
+name = "fractal-renderer-vk"
 path = "main.rs"

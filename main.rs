@@ -1,7 +1,7 @@
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Barrier, RwLock};
+use std::sync::{Arc, Barrier, Condvar, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -150,68 +150,51 @@ struct TileResult {
     edge_values: Vec<f32>,    // Edge values for neighboring tile dependencies
 }
 
-// CPU-based fractal computation functions
-fn compute_julia_fractal_tile(
+// CPU-based parameter computation (simulates expensive work)
+fn compute_tile_parameters(
     tile_work: &TileWork,
-    dependency_edges: Option<&HashMap<u32, Vec<f32>>>,
+    _dependency_edges: Option<&HashMap<u32, Vec<f32>>>,
 ) -> TileResult {
-    let mut pixel_data = Vec::with_capacity((tile_work.width * tile_work.height) as usize);
+    // Generate influence parameters instead of full pixel data
+    // This simulates expensive CPU computation but produces less data
+    let mut pixel_data = Vec::with_capacity(4); // Just 4 values per tile
     let mut edge_values = Vec::new();
 
-    let aspect_ratio = WIDTH as f32 / HEIGHT as f32;
-    let c_real = tile_work.params.julia_c_real + 0.1 * (tile_work.params.time).sin();
-    let c_imag = tile_work.params.julia_c_imag + 0.1 * (tile_work.params.time * 0.7).cos();
+    // Simulate expensive CPU work
+    let mut influence_r = 0.0f32;
+    let mut influence_g = 0.0f32;
+    let mut influence_b = 0.0f32;
 
-    for y in 0..tile_work.height {
-        for x in 0..tile_work.width {
-            let pixel_x = tile_work.x_start + x;
-            let pixel_y = tile_work.y_start + y;
-
-            // Convert to complex plane coordinates
-            let real = (pixel_x as f32 / WIDTH as f32 - 0.5) * 4.0 / tile_work.params.zoom
-                * aspect_ratio
-                + tile_work.params.center_x;
-            let imag = (pixel_y as f32 / HEIGHT as f32 - 0.5) * 4.0 / tile_work.params.zoom
-                + tile_work.params.center_y;
-
-            // Apply dependency influence if available
-            let (z_real, z_imag) = if let Some(deps) = dependency_edges {
-                apply_dependency_influence(real, imag, deps, tile_work.tile_id)
-            } else {
-                (real, imag)
-            };
-
-            let (iteration, smooth_iter, trap_min) = julia_iteration(
-                z_real,
-                z_imag,
-                c_real,
-                c_imag,
-                tile_work.params.max_iterations,
-            );
-
-            let color = compute_fractal_color(
-                iteration,
-                smooth_iter,
-                trap_min,
-                tile_work.params.max_iterations,
-                tile_work.params.time,
-            );
-            pixel_data.push(color);
-
-            // Store edge values for dependencies
-            if is_edge_pixel(x, y, tile_work.width, tile_work.height) {
-                edge_values.push(smooth_iter);
-            }
-        }
+    // Complex computation to generate parameters
+    for i in 0..10000 {
+        let x = (tile_work.tile_id as f32 + i as f32) * 0.001;
+        influence_r += (x * tile_work.params.time).sin();
+        influence_g += (x * tile_work.params.time * 1.3).cos();
+        influence_b += (x * tile_work.params.time * 0.7).sin() * (x * 2.1).cos();
     }
+
+    influence_r = (influence_r / 10000.0).tanh();
+    influence_g = (influence_g / 10000.0).tanh();
+    influence_b = (influence_b / 10000.0).tanh();
+
+    // Store just one color per tile as influence parameters
+    let influence_color = [
+        ((influence_r * 0.5 + 0.5) * 255.0) as u8,
+        ((influence_g * 0.5 + 0.5) * 255.0) as u8,
+        ((influence_b * 0.5 + 0.5) * 255.0) as u8,
+        255,
+    ];
+
+    pixel_data.push(influence_color);
+    edge_values.push(influence_r);
 
     TileResult {
         tile_id: tile_work.tile_id,
         frame_id: tile_work.frame_id,
         x_start: tile_work.x_start,
         y_start: tile_work.y_start,
-        width: tile_work.width,
-        height: tile_work.height,
+        width: 1, // Just one value per tile
+        height: 1,
         pixel_data,
         edge_values,
     }
@@ -447,6 +430,8 @@ struct ThreadPool {
     #[allow(dead_code)]
     work_counter: Arc<AtomicU64>,
     completed_tiles: Arc<RwLock<HashMap<u32, HashMap<u32, TileResult>>>>, // frame_id -> tile_id -> result
+    thundering_herd_trigger: Arc<(Mutex<bool>, Condvar)>, // For simulating thundering herd
+    shared_resource: Arc<Mutex<f32>>,                     // Shared resource for contention
 }
 
 impl ThreadPool {
@@ -458,6 +443,8 @@ impl ThreadPool {
         let shutdown = Arc::new(AtomicBool::new(false));
         let work_counter = Arc::new(AtomicU64::new(0));
         let completed_tiles = Arc::new(RwLock::new(HashMap::new()));
+        let thundering_herd_trigger = Arc::new((Mutex::new(false), Condvar::new()));
+        let shared_resource = Arc::new(Mutex::new(0.0f32));
 
         let mut workers = Vec::new();
 
@@ -467,6 +454,8 @@ impl ThreadPool {
             let barrier = Arc::clone(&barrier);
             let shutdown = Arc::clone(&shutdown);
             let work_counter = Arc::clone(&work_counter);
+            let herd_trigger = Arc::clone(&thundering_herd_trigger);
+            let shared_res = Arc::clone(&shared_resource);
 
             let handle = thread::spawn(move || {
                 Self::worker_thread(
@@ -476,6 +465,8 @@ impl ThreadPool {
                     barrier,
                     shutdown,
                     work_counter,
+                    herd_trigger,
+                    shared_res,
                 );
             });
 
@@ -490,6 +481,8 @@ impl ThreadPool {
             shutdown,
             work_counter,
             completed_tiles,
+            thundering_herd_trigger,
+            shared_resource,
         }
     }
 
@@ -500,6 +493,8 @@ impl ThreadPool {
         barrier: Arc<Barrier>,
         shutdown: Arc<AtomicBool>,
         work_counter: Arc<AtomicU64>,
+        herd_trigger: Arc<(Mutex<bool>, Condvar)>,
+        shared_resource: Arc<Mutex<f32>>,
     ) {
         while !shutdown.load(Ordering::Relaxed) {
             let msg = receiver.recv();
@@ -551,8 +546,24 @@ impl ThreadPool {
                     let _work_guard = work_span.enter();
                     work_counter.fetch_add(1, Ordering::Relaxed);
 
-                    // Compute fractal tile on CPU
-                    let result = compute_julia_fractal_tile(&tile_work, None);
+                    // Check for thundering herd trigger (non-blocking check)
+                    if let Ok(trigger) = herd_trigger.0.try_lock() {
+                        if *trigger {
+                            // All threads wake up and compete for shared resource
+                            drop(trigger);
+
+                            // Simulate thundering herd - all threads try to lock shared resource
+                            if let Ok(mut shared) = shared_resource.lock() {
+                                // Expensive operation while holding lock
+                                for _ in 0..1000000 {
+                                    *shared = (*shared * 1.1).sin();
+                                }
+                            }
+                        }
+                    }
+
+                    // Compute tile parameters on CPU
+                    let result = compute_tile_parameters(&tile_work, None);
                     sender.send(WorkerResult::TileComplete(result)).unwrap();
                 }
                 Ok(WorkerMessage::ComputeTileWithDeps(tile_work, _dep_ids)) => {
@@ -573,7 +584,7 @@ impl ThreadPool {
 
                     // TODO: Implement dependency resolution
                     // For now, compute without dependencies
-                    let result = compute_julia_fractal_tile(&tile_work, None);
+                    let result = compute_tile_parameters(&tile_work, None);
                     sender.send(WorkerResult::TileComplete(result)).unwrap();
                 }
                 Ok(WorkerMessage::PreprocessData(data, parent_span)) => {
@@ -592,6 +603,24 @@ impl ThreadPool {
                     let _work_guard = work_span.enter();
 
                     work_counter.fetch_add(1, Ordering::Relaxed);
+
+                    // Check for thundering herd and create contention
+                    if let Ok(trigger) = herd_trigger.0.try_lock() {
+                        if *trigger {
+                            drop(trigger);
+                            println!("Worker {} participating in thundering herd!", id);
+
+                            // All threads compete for shared resource
+                            if let Ok(mut shared) = shared_resource.lock() {
+                                println!("Worker {} got the lock!", id);
+                                for _ in 0..2000000 {
+                                    // More expensive work
+                                    *shared = (*shared * 1.1 + 0.1).sin();
+                                }
+                                thread::sleep(Duration::from_millis(50)); // Hold lock longer
+                            }
+                        }
+                    }
 
                     // CPU-intensive data transformation
                     let processed: Vec<f32> = data
@@ -720,6 +749,32 @@ impl ThreadPool {
         // Return completed tiles for this frame
         let mut tiles = self.completed_tiles.write().unwrap();
         tiles.remove(&frame_id).unwrap_or_default()
+    }
+
+    fn trigger_thundering_herd(&self) {
+        println!(
+            "🔥 TRIGGERING THUNDERING HERD! All {} workers will compete!",
+            WORKER_THREADS
+        );
+
+        // Set the trigger flag and wake all threads
+        let (lock, cvar) = &*self.thundering_herd_trigger;
+        if let Ok(mut trigger) = lock.lock() {
+            *trigger = true;
+            cvar.notify_all(); // Wake all waiting threads at once
+
+            // Reset after a longer time to ensure contention
+            thread::spawn({
+                let trigger_arc = Arc::clone(&self.thundering_herd_trigger);
+                move || {
+                    thread::sleep(Duration::from_millis(500)); // Longer window for chaos
+                    if let Ok(mut t) = trigger_arc.0.lock() {
+                        *t = false;
+                        println!("✅ Thundering herd window closed");
+                    }
+                }
+            });
+        }
     }
 }
 
@@ -1100,6 +1155,26 @@ impl VulkanRenderer {
                         float time;
                     } params;
 
+                    vec3 hsv_to_rgb(float h, float s, float v) {
+                        h = fract(h);
+                        float i = floor(h * 6.0);
+                        float f = h * 6.0 - i;
+                        float p = v * (1.0 - s);
+                        float q = v * (1.0 - s * f);
+                        float t = v * (1.0 - s * (1.0 - f));
+                        
+                        int idx = int(mod(i, 6.0));
+                        vec3 rgb;
+                        if (idx == 0) rgb = vec3(v, t, p);
+                        else if (idx == 1) rgb = vec3(q, v, p);
+                        else if (idx == 2) rgb = vec3(p, v, t);
+                        else if (idx == 3) rgb = vec3(p, q, v);
+                        else if (idx == 4) rgb = vec3(t, p, v);
+                        else rgb = vec3(v, p, q);
+                        
+                        return rgb;
+                    }
+
                     void main() {
                         ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
 
@@ -1107,9 +1182,61 @@ impl VulkanRenderer {
                             return;
                         }
 
-                        // Simply copy the CPU-computed fractal data to output
-                        vec4 cpu_color = imageLoad(cpu_data, pixel_coords);
-                        imageStore(img, pixel_coords, cpu_color);
+                        // Get CPU-computed influence/parameters (small amount of data)
+                        vec4 cpu_influence = imageLoad(cpu_data, pixel_coords / 64); // Sample at tile level
+                        
+                        // Convert to complex plane coordinates
+                        float aspect_ratio = float(params.width) / float(params.height);
+                        float real = (float(pixel_coords.x) / float(params.width) - 0.5) * 4.0 / params.zoom * aspect_ratio + params.center_x;
+                        float imag = (float(pixel_coords.y) / float(params.height) - 0.5) * 4.0 / params.zoom + params.center_y;
+                        
+                        // Apply CPU influence to starting position
+                        real += cpu_influence.r * 0.1;
+                        imag += cpu_influence.g * 0.1;
+                        
+                        // Julia set parameters with time variation
+                        float c_real = params.julia_c_real + 0.1 * sin(params.time);
+                        float c_imag = params.julia_c_imag + 0.1 * cos(params.time * 0.7);
+                        
+                        // Julia iteration
+                        float z_real = real;
+                        float z_imag = imag;
+                        uint iteration = 0;
+                        float trap_min = 1000.0;
+                        
+                        for (uint i = 0; i < params.max_iterations; i++) {
+                            float z_real_squared = z_real * z_real;
+                            float z_imag_squared = z_imag * z_imag;
+                            
+                            // Orbit trap for additional coloring
+                            float dist = sqrt((z_real - 0.5) * (z_real - 0.5) + z_imag * z_imag);
+                            trap_min = min(trap_min, dist);
+                            
+                            if (z_real_squared + z_imag_squared > 4.0) {
+                                float smooth_iter = float(i) + 1.0 - log(log(sqrt(z_real_squared + z_imag_squared))) / log(2.0);
+                                
+                                // Color based on iterations and CPU influence
+                                float hue = smooth_iter / float(params.max_iterations) * 3.0 + params.time * 0.1 + trap_min + cpu_influence.b * 0.5;
+                                float saturation = 0.8 - trap_min * 0.3;
+                                float value = 1.0 - pow(smooth_iter / float(params.max_iterations), 0.5);
+                                
+                                vec3 rgb = hsv_to_rgb(hue, saturation, value);
+                                imageStore(img, pixel_coords, vec4(rgb, 1.0));
+                                return;
+                            }
+                            
+                            float new_real = z_real_squared - z_imag_squared + c_real;
+                            float new_imag = 2.0 * z_real * z_imag + c_imag;
+                            
+                            z_real = new_real;
+                            z_imag = new_imag;
+                            iteration = i;
+                        }
+                        
+                        // Interior color
+                        float interior = trap_min * 3.0;
+                        vec3 color = vec3(interior * 0.1, interior * 0.2, interior * 0.3);
+                        imageStore(img, pixel_coords, vec4(color, 1.0));
                     }
                 "#
             }
@@ -1144,12 +1271,13 @@ impl VulkanRenderer {
     fn create_cpu_data_image(
         memory_allocator: &Arc<StandardMemoryAllocator>,
     ) -> Result<Arc<ImageView>, Box<dyn std::error::Error>> {
+        // Much smaller image for tile-level influence data
         let image = Image::new(
             memory_allocator.clone(),
             ImageCreateInfo {
                 image_type: ImageType::Dim2d,
                 format: vulkano::format::Format::R8G8B8A8_UNORM,
-                extent: [WIDTH, HEIGHT, 1],
+                extent: [TILES_X, TILES_Y, 1], // One pixel per tile
                 usage: ImageUsage::STORAGE | ImageUsage::TRANSFER_DST,
                 ..Default::default()
             },
@@ -1230,7 +1358,13 @@ impl VulkanRenderer {
         let span = span!(Level::INFO, "render_frame", frame_id = frame_id);
         let _enter = span.enter();
 
-        // Schedule tile-based fractal computation
+        // Trigger thundering herd every 3-5 seconds (frame_id at 60fps)
+        if frame_id % 240 == 180 {
+            // Every ~4 seconds at 60fps
+            self.thread_pool.trigger_thundering_herd();
+        }
+
+        // Schedule tile-based parameter computation (much lighter than fractal)
         ComputeScheduler::schedule_tiles_for_frame(
             Arc::clone(&self.thread_pool),
             frame_id,
@@ -1238,23 +1372,26 @@ impl VulkanRenderer {
             Some(span.clone()),
         );
 
-        // MAIN THREAD DEPENDENCY: Wait for all tiles to complete before proceeding
+        // Wait for parameter tiles (now much faster)
         let total_tiles = TILES_X * TILES_Y;
         let completed_tiles = self.thread_pool.wait_for_frame_tiles(frame_id, total_tiles);
 
-        // Composite tiles into final image buffer
-        let base_image = self.composite_tiles(completed_tiles);
+        // Create small influence map from tile parameters
+        let influence_data = self.create_influence_map(completed_tiles);
 
-        // Multi-pass rendering with sequential dependencies
-        let final_image = self.apply_multi_pass_rendering(frame_id, base_image, params)?;
+        // Upload small CPU-computed influence data to GPU
+        self.upload_cpu_data_to_gpu(&influence_data)?;
 
-        // Upload CPU-computed fractal data to GPU
-        self.upload_cpu_data_to_gpu(&final_image)?;
-
-        // Simulate some post-processing work
-        let dummy_image_data = vec![128u8; 1000];
-        self.thread_pool
-            .submit_work(WorkerMessage::PostprocessData(dummy_image_data, None));
+        // Occasionally create additional contention
+        if frame_id % 120 == 60 {
+            // Every 2 seconds
+            // Submit work that causes contention
+            for _ in 0..WORKER_THREADS {
+                let dummy_data = vec![frame_id as f32; 1000];
+                self.thread_pool
+                    .submit_work(WorkerMessage::PreprocessData(dummy_data, None));
+            }
+        }
 
         // Update parameters
         {
@@ -1318,31 +1455,21 @@ impl VulkanRenderer {
         Ok(())
     }
 
-    fn composite_tiles(&self, tiles: HashMap<u32, TileResult>) -> Vec<[u8; 4]> {
-        let mut final_image = vec![[0u8; 4]; (WIDTH * HEIGHT) as usize];
+    fn create_influence_map(&self, tiles: HashMap<u32, TileResult>) -> Vec<[u8; 4]> {
+        // Create a small influence map (one value per tile)
+        let influence_size = (TILES_X * TILES_Y) as usize;
+        let mut influence_map = vec![[128u8; 4]; influence_size];
 
         for tile_result in tiles.values() {
-            let tile_pixels = &tile_result.pixel_data;
-            let mut pixel_idx = 0;
-
-            for y in 0..tile_result.height {
-                for x in 0..tile_result.width {
-                    let screen_x = tile_result.x_start + x;
-                    let screen_y = tile_result.y_start + y;
-
-                    if screen_x < WIDTH && screen_y < HEIGHT {
-                        let screen_idx = (screen_y * WIDTH + screen_x) as usize;
-                        if pixel_idx < tile_pixels.len() && screen_idx < final_image.len() {
-                            final_image[screen_idx] = tile_pixels[pixel_idx];
-                        }
-                    }
-
-                    pixel_idx += 1;
+            if let Some(first_pixel) = tile_result.pixel_data.first() {
+                let tile_idx = tile_result.tile_id as usize;
+                if tile_idx < influence_map.len() {
+                    influence_map[tile_idx] = *first_pixel;
                 }
             }
         }
 
-        final_image
+        influence_map
     }
 
     fn upload_cpu_data_to_gpu(
@@ -1393,76 +1520,9 @@ impl VulkanRenderer {
         Ok(())
     }
 
-    fn apply_multi_pass_rendering(
-        &mut self,
-        frame_id: u32,
-        base_image: Vec<[u8; 4]>,
-        params: FractalParams,
-    ) -> Result<Vec<[u8; 4]>, Box<dyn std::error::Error>> {
-        // Pass 1: Anti-aliasing (depends on base render)
-        let aa_pass = PassWork {
-            pass_id: 1,
-            frame_id,
-            pass_type: PassType::AntiAliasing,
-            input_data: base_image,
-            params,
-            parent_span: None,
-        };
+    // Removed - no longer needed since GPU does the rendering
 
-        self.thread_pool
-            .submit_work(WorkerMessage::ComputePass(aa_pass));
-        let aa_result = self.wait_for_pass_completion(frame_id, 1)?;
-
-        // Pass 2: Post-processing (depends on anti-aliasing)
-        let pp_pass = PassWork {
-            pass_id: 2,
-            frame_id,
-            pass_type: PassType::PostProcessing,
-            input_data: aa_result,
-            params,
-            parent_span: None,
-        };
-
-        self.thread_pool
-            .submit_work(WorkerMessage::ComputePass(pp_pass));
-        let pp_result = self.wait_for_pass_completion(frame_id, 2)?;
-
-        // Pass 3: Final composite (depends on post-processing)
-        let final_pass = PassWork {
-            pass_id: 3,
-            frame_id,
-            pass_type: PassType::FinalComposite,
-            input_data: pp_result,
-            params,
-            parent_span: None,
-        };
-
-        self.thread_pool
-            .submit_work(WorkerMessage::ComputePass(final_pass));
-        let final_result = self.wait_for_pass_completion(frame_id, 3)?;
-
-        Ok(final_result)
-    }
-
-    fn wait_for_pass_completion(
-        &self,
-        frame_id: u32,
-        pass_id: u32,
-    ) -> Result<Vec<[u8; 4]>, Box<dyn std::error::Error>> {
-        loop {
-            if let Ok(result) = self
-                .thread_pool
-                .result_receiver
-                .recv_timeout(Duration::from_millis(100))
-            {
-                if let WorkerResult::PassComplete(pass_result) = result {
-                    if pass_result.frame_id == frame_id && pass_result.pass_id == pass_id {
-                        return Ok(pass_result.output_data);
-                    }
-                }
-            }
-        }
-    }
+    // Removed - no longer needed since GPU does the rendering directly
 
     #[allow(dead_code)]
     pub fn benchmark(&mut self, frames: u32) -> Result<(), Box<dyn std::error::Error>> {
@@ -1539,6 +1599,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut frame_count = 0u32;
     let start_time = std::time::Instant::now();
 
+    // FPS tracking variables
+    let mut fps_timer = std::time::Instant::now();
+    let mut fps_frame_count = 0u32;
+    let mut current_fps = 0.0f32;
+    let mut frame_times = VecDeque::with_capacity(60);
+    let mut last_frame_time = std::time::Instant::now();
+
     event_loop.run(move |event, _, control_flow| -> () {
         *control_flow = winit::event_loop::ControlFlow::Poll;
 
@@ -1557,6 +1624,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => {}
             },
             Event::MainEventsCleared => {
+                let now = std::time::Instant::now();
+                let frame_time = now.duration_since(last_frame_time);
+                last_frame_time = now;
+
+                // Track frame times for averaging
+                frame_times.push_back(frame_time.as_secs_f32() * 1000.0);
+                if frame_times.len() > 60 {
+                    frame_times.pop_front();
+                }
+
+                // Update FPS counter every second
+                fps_frame_count += 1;
+                if fps_timer.elapsed().as_secs_f32() >= 1.0 {
+                    current_fps = fps_frame_count as f32 / fps_timer.elapsed().as_secs_f32();
+                    fps_frame_count = 0;
+                    fps_timer = std::time::Instant::now();
+
+                    // Calculate average frame time
+                    let avg_frame_time = if !frame_times.is_empty() {
+                        frame_times.iter().sum::<f32>() / frame_times.len() as f32
+                    } else {
+                        0.0
+                    };
+
+                    // Update window title with FPS
+                    window.set_title(&format!(
+                        "Multi-threaded GPU Fractal Renderer - FPS: {:.1} | Frame Time: {:.2}ms",
+                        current_fps, avg_frame_time
+                    ));
+                }
+
                 let elapsed = start_time.elapsed().as_secs_f32();
 
                 let mut params = FractalParams::default();

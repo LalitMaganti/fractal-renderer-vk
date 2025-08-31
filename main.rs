@@ -79,32 +79,10 @@ impl Default for FractalParams {
 
 #[derive(Debug, Clone)]
 enum WorkerMessage {
-    ComputeFrame(u32, FractalParams, Option<Span>),
     ComputeTile(TileWork),
-    ComputeTileWithDeps(TileWork, Vec<u32>), // tile_work, dependency_tile_ids
-    ComputePass(PassWork),                   // Multi-pass rendering
     PreprocessData(Vec<f32>, Option<Span>),
-    PostprocessData(Vec<u8>, Option<Span>),
     Synchronize(u32),
     Shutdown,
-}
-
-#[derive(Debug, Clone)]
-struct PassWork {
-    pass_id: u32,
-    frame_id: u32,
-    pass_type: PassType,
-    input_data: Vec<[u8; 4]>,
-    params: FractalParams,
-    parent_span: Option<Span>,
-}
-
-#[derive(Debug, Clone)]
-enum PassType {
-    BaseRender,
-    AntiAliasing,
-    PostProcessing,
-    FinalComposite,
 }
 
 #[derive(Debug, Clone)]
@@ -113,8 +91,6 @@ struct TileWork {
     frame_id: u32,
     x_start: u32,
     y_start: u32,
-    width: u32,
-    height: u32,
     params: FractalParams,
     parent_span: Option<Span>,
 }
@@ -122,32 +98,16 @@ struct TileWork {
 #[allow(dead_code)]
 #[derive(Debug)]
 enum WorkerResult {
-    FrameReady(u32, FractalParams),
     TileComplete(TileResult),
-    PassComplete(PassResult),
     DataProcessed(Vec<f32>),
-    ImageProcessed(Vec<u8>),
     SyncComplete(u32),
-}
-
-#[derive(Debug, Clone)]
-struct PassResult {
-    pass_id: u32,
-    frame_id: u32,
-    pass_type: PassType,
-    output_data: Vec<[u8; 4]>,
 }
 
 #[derive(Debug, Clone)]
 struct TileResult {
     tile_id: u32,
     frame_id: u32,
-    x_start: u32,
-    y_start: u32,
-    width: u32,
-    height: u32,
     pixel_data: Vec<[u8; 4]>, // RGBA pixels
-    edge_values: Vec<f32>,    // Edge values for neighboring tile dependencies
 }
 
 // CPU-based parameter computation (simulates expensive work)
@@ -157,8 +117,7 @@ fn compute_tile_parameters(
 ) -> TileResult {
     // Generate influence parameters instead of full pixel data
     // This simulates expensive CPU computation but produces less data
-    let mut pixel_data = Vec::with_capacity(4); // Just 4 values per tile
-    let mut edge_values = Vec::new();
+    let mut pixel_data = Vec::with_capacity(1); // Just one value per tile
 
     // Simulate expensive CPU work
     let mut influence_r = 0.0f32;
@@ -186,239 +145,12 @@ fn compute_tile_parameters(
     ];
 
     pixel_data.push(influence_color);
-    edge_values.push(influence_r);
 
     TileResult {
         tile_id: tile_work.tile_id,
         frame_id: tile_work.frame_id,
-        x_start: tile_work.x_start,
-        y_start: tile_work.y_start,
-        width: 1, // Just one value per tile
-        height: 1,
         pixel_data,
-        edge_values,
     }
-}
-
-fn julia_iteration(
-    mut z_real: f32,
-    mut z_imag: f32,
-    c_real: f32,
-    c_imag: f32,
-    max_iterations: u32,
-) -> (u32, f32, f32) {
-    let mut iteration = 0;
-    let mut trap_min: f32 = 1000.0;
-
-    for i in 0..max_iterations {
-        let z_real_squared = z_real * z_real;
-        let z_imag_squared = z_imag * z_imag;
-
-        // Orbit trap for additional coloring
-        let dist = ((z_real - 0.5) * (z_real - 0.5) + z_imag * z_imag).sqrt();
-        trap_min = trap_min.min(dist);
-
-        if z_real_squared + z_imag_squared > 4.0 {
-            let smooth_iter =
-                i as f32 + 1.0 - (z_real_squared + z_imag_squared).sqrt().ln().ln() / 2.0_f32.ln();
-            return (i, smooth_iter, trap_min);
-        }
-
-        let new_real = z_real_squared - z_imag_squared + c_real;
-        let new_imag = 2.0 * z_real * z_imag + c_imag;
-
-        z_real = new_real;
-        z_imag = new_imag;
-        iteration = i;
-    }
-
-    (iteration, iteration as f32, trap_min)
-}
-
-fn apply_dependency_influence(
-    real: f32,
-    imag: f32,
-    deps: &HashMap<u32, Vec<f32>>,
-    _tile_id: u32,
-) -> (f32, f32) {
-    let mut influence_real = 0.0;
-    let mut influence_imag = 0.0;
-    let mut count = 0;
-
-    // Average influence from neighboring tiles
-    for edge_values in deps.values() {
-        if !edge_values.is_empty() {
-            let avg = edge_values.iter().sum::<f32>() / edge_values.len() as f32;
-            influence_real += avg * 0.01; // Small influence factor
-            influence_imag += avg * 0.005;
-            count += 1;
-        }
-    }
-
-    if count > 0 {
-        influence_real /= count as f32;
-        influence_imag /= count as f32;
-    }
-
-    (real + influence_real, imag + influence_imag)
-}
-
-fn compute_fractal_color(
-    iteration: u32,
-    smooth_iter: f32,
-    trap_min: f32,
-    max_iterations: u32,
-    time: f32,
-) -> [u8; 4] {
-    if iteration == max_iterations {
-        let interior = trap_min * 3.0;
-        let r = (interior * 0.1 * 255.0) as u8;
-        let g = (interior * 0.2 * 255.0) as u8;
-        let b = (interior * 0.3 * 255.0) as u8;
-        [r, g, b, 255]
-    } else {
-        let hue = smooth_iter / max_iterations as f32 * 3.0 + time * 0.1 + trap_min;
-        let saturation = 0.8 - trap_min * 0.3;
-        let value = 1.0 - (smooth_iter / max_iterations as f32).powf(0.5);
-
-        let rgb = hsv_to_rgb(hue, saturation, value);
-        [rgb.0, rgb.1, rgb.2, 255]
-    }
-}
-
-fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
-    let h = h - h.floor(); // Normalize hue to [0, 1)
-    let i = (h * 6.0).floor() as i32;
-    let f = h * 6.0 - i as f32;
-    let p = v * (1.0 - s);
-    let q = v * (1.0 - s * f);
-    let t = v * (1.0 - s * (1.0 - f));
-
-    let (r, g, b) = match i % 6 {
-        0 => (v, t, p),
-        1 => (q, v, p),
-        2 => (p, v, t),
-        3 => (p, q, v),
-        4 => (t, p, v),
-        _ => (v, p, q),
-    };
-
-    ((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
-}
-
-fn is_edge_pixel(x: u32, y: u32, width: u32, height: u32) -> bool {
-    x == 0 || y == 0 || x == width - 1 || y == height - 1
-}
-
-// Multi-pass rendering functions
-fn compute_rendering_pass(pass_work: &PassWork) -> PassResult {
-    match pass_work.pass_type {
-        PassType::BaseRender => {
-            // This would typically be handled by tile computation
-            PassResult {
-                pass_id: pass_work.pass_id,
-                frame_id: pass_work.frame_id,
-                pass_type: pass_work.pass_type.clone(),
-                output_data: pass_work.input_data.clone(),
-            }
-        }
-        PassType::AntiAliasing => {
-            // Apply anti-aliasing filter
-            let aa_data = apply_antialiasing(&pass_work.input_data);
-            PassResult {
-                pass_id: pass_work.pass_id,
-                frame_id: pass_work.frame_id,
-                pass_type: pass_work.pass_type.clone(),
-                output_data: aa_data,
-            }
-        }
-        PassType::PostProcessing => {
-            // Apply post-processing effects like bloom, contrast, etc.
-            let pp_data = apply_post_processing(&pass_work.input_data, pass_work.params.time);
-            PassResult {
-                pass_id: pass_work.pass_id,
-                frame_id: pass_work.frame_id,
-                pass_type: pass_work.pass_type.clone(),
-                output_data: pp_data,
-            }
-        }
-        PassType::FinalComposite => {
-            // Final composite pass
-            let composite_data = apply_final_composite(&pass_work.input_data);
-            PassResult {
-                pass_id: pass_work.pass_id,
-                frame_id: pass_work.frame_id,
-                pass_type: pass_work.pass_type.clone(),
-                output_data: composite_data,
-            }
-        }
-    }
-}
-
-fn apply_antialiasing(input: &[[u8; 4]]) -> Vec<[u8; 4]> {
-    // Simple box blur anti-aliasing
-    let mut output = input.to_vec();
-    let width = WIDTH as usize;
-    let height = HEIGHT as usize;
-
-    for y in 1..height - 1 {
-        for x in 1..width - 1 {
-            let idx = y * width + x;
-            let mut r_sum = 0u32;
-            let mut g_sum = 0u32;
-            let mut b_sum = 0u32;
-
-            // 3x3 kernel
-            for dy in -1i32..=1 {
-                for dx in -1i32..=1 {
-                    let nx = (x as i32 + dx) as usize;
-                    let ny = (y as i32 + dy) as usize;
-                    let nidx = ny * width + nx;
-
-                    if nidx < input.len() {
-                        r_sum += input[nidx][0] as u32;
-                        g_sum += input[nidx][1] as u32;
-                        b_sum += input[nidx][2] as u32;
-                    }
-                }
-            }
-
-            output[idx] = [(r_sum / 9) as u8, (g_sum / 9) as u8, (b_sum / 9) as u8, 255];
-        }
-    }
-
-    output
-}
-
-fn apply_post_processing(input: &[[u8; 4]], time: f32) -> Vec<[u8; 4]> {
-    // Apply time-based color effects
-    input
-        .iter()
-        .map(|pixel| {
-            let brightness_mod = 1.0 + (time * 0.5).sin() * 0.1;
-            let contrast_mod = 1.1;
-
-            let r = (pixel[0] as f32 * brightness_mod * contrast_mod).min(255.0) as u8;
-            let g = (pixel[1] as f32 * brightness_mod * contrast_mod).min(255.0) as u8;
-            let b = (pixel[2] as f32 * brightness_mod * contrast_mod).min(255.0) as u8;
-
-            [r, g, b, pixel[3]]
-        })
-        .collect()
-}
-
-fn apply_final_composite(input: &[[u8; 4]]) -> Vec<[u8; 4]> {
-    // Final gamma correction
-    input
-        .iter()
-        .map(|pixel| {
-            let r = ((pixel[0] as f32 / 255.0).powf(1.0 / 2.2) * 255.0) as u8;
-            let g = ((pixel[1] as f32 / 255.0).powf(1.0 / 2.2) * 255.0) as u8;
-            let b = ((pixel[2] as f32 / 255.0).powf(1.0 / 2.2) * 255.0) as u8;
-
-            [r, g, b, pixel[3]]
-        })
-        .collect()
 }
 
 struct ThreadPool {
@@ -500,36 +232,6 @@ impl ThreadPool {
             let msg = receiver.recv();
 
             match msg {
-                Ok(WorkerMessage::ComputeFrame(frame_id, params, parent_span)) => {
-                    let work_span = span!(
-                        Level::INFO,
-                        "compute_frame",
-                        worker_id = id,
-                        frame_id = frame_id
-                    );
-
-                    // Establish follows_from relationship if parent span exists
-                    if let Some(parent) = parent_span {
-                        work_span.follows_from(parent);
-                    }
-
-                    let _work_guard = work_span.enter();
-
-                    work_counter.fetch_add(1, Ordering::Relaxed);
-
-                    // Simulate CPU-intensive preprocessing
-                    let mut _sum = 0.0f32;
-                    for i in 0..100000 {
-                        _sum += (i as f32 * params.time).sin();
-                    }
-
-                    // Add some jitter to stress scheduler
-                    thread::sleep(Duration::from_micros((id as u64 * 100) % 500));
-
-                    sender
-                        .send(WorkerResult::FrameReady(frame_id, params))
-                        .unwrap();
-                }
                 Ok(WorkerMessage::ComputeTile(tile_work)) => {
                     let work_span = span!(
                         Level::INFO,
@@ -563,27 +265,6 @@ impl ThreadPool {
                     }
 
                     // Compute tile parameters on CPU
-                    let result = compute_tile_parameters(&tile_work, None);
-                    sender.send(WorkerResult::TileComplete(result)).unwrap();
-                }
-                Ok(WorkerMessage::ComputeTileWithDeps(tile_work, _dep_ids)) => {
-                    let work_span = span!(
-                        Level::INFO,
-                        "compute_tile_with_deps",
-                        worker_id = id,
-                        tile_id = tile_work.tile_id,
-                        frame_id = tile_work.frame_id
-                    );
-
-                    if let Some(parent) = &tile_work.parent_span {
-                        work_span.follows_from(parent.clone());
-                    }
-
-                    let _work_guard = work_span.enter();
-                    work_counter.fetch_add(1, Ordering::Relaxed);
-
-                    // TODO: Implement dependency resolution
-                    // For now, compute without dependencies
                     let result = compute_tile_parameters(&tile_work, None);
                     sender.send(WorkerResult::TileComplete(result)).unwrap();
                 }
@@ -633,57 +314,6 @@ impl ThreadPool {
                         .collect();
 
                     sender.send(WorkerResult::DataProcessed(processed)).unwrap();
-                }
-                Ok(WorkerMessage::PostprocessData(data, parent_span)) => {
-                    let work_span = span!(
-                        Level::INFO,
-                        "postprocess_data",
-                        worker_id = id,
-                        data_size = data.len()
-                    );
-
-                    // Establish follows_from relationship if parent span exists
-                    if let Some(parent) = parent_span {
-                        work_span.follows_from(parent);
-                    }
-
-                    let _work_guard = work_span.enter();
-
-                    work_counter.fetch_add(1, Ordering::Relaxed);
-
-                    // Simulate image post-processing
-                    let processed: Vec<u8> = data
-                        .iter()
-                        .map(|&pixel| {
-                            let mut p = pixel as f32 / 255.0;
-                            p = p.powf(2.2); // Gamma correction
-                            (p * 255.0) as u8
-                        })
-                        .collect();
-
-                    sender
-                        .send(WorkerResult::ImageProcessed(processed))
-                        .unwrap();
-                }
-                Ok(WorkerMessage::ComputePass(pass_work)) => {
-                    let work_span = span!(
-                        Level::INFO,
-                        "compute_pass",
-                        worker_id = id,
-                        pass_id = pass_work.pass_id,
-                        frame_id = pass_work.frame_id
-                    );
-
-                    if let Some(parent) = &pass_work.parent_span {
-                        work_span.follows_from(parent.clone());
-                    }
-
-                    let _work_guard = work_span.enter();
-                    work_counter.fetch_add(1, Ordering::Relaxed);
-
-                    // Compute the rendering pass
-                    let result = compute_rendering_pass(&pass_work);
-                    sender.send(WorkerResult::PassComplete(result)).unwrap();
                 }
                 Ok(WorkerMessage::Synchronize(sync_id)) => {
                     let sync_span = span!(
@@ -782,135 +412,31 @@ impl Drop for ThreadPool {
     }
 }
 
-struct ComputeScheduler {
-    #[allow(dead_code)]
+fn schedule_tiles_for_frame(
     thread_pool: Arc<ThreadPool>,
-    compute_threads: Vec<thread::JoinHandle<()>>,
-    frame_queue: Arc<RwLock<VecDeque<(u32, FractalParams, Option<Span>)>>>,
-    shutdown: Arc<AtomicBool>,
-}
+    frame_id: u32,
+    params: FractalParams,
+    parent_span: Option<Span>,
+) {
+    // Create tiles for the frame
+    let mut tile_id = 0;
 
-impl ComputeScheduler {
-    fn new(thread_pool: Arc<ThreadPool>) -> Self {
-        let frame_queue = Arc::new(RwLock::new(VecDeque::new()));
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let mut compute_threads = Vec::new();
+    for tile_y in 0..TILES_Y {
+        for tile_x in 0..TILES_X {
+            let x_start = tile_x * TILE_SIZE;
+            let y_start = tile_y * TILE_SIZE;
 
-        for id in 0..COMPUTE_THREADS {
-            let pool = Arc::clone(&thread_pool);
-            let queue = Arc::clone(&frame_queue);
-            let shutdown = Arc::clone(&shutdown);
-
-            let handle = thread::spawn(move || {
-                Self::compute_thread(id, pool, queue, shutdown);
-            });
-
-            compute_threads.push(handle);
-        }
-
-        ComputeScheduler {
-            thread_pool,
-            compute_threads,
-            frame_queue,
-            shutdown,
-        }
-    }
-
-    fn compute_thread(
-        id: usize,
-        thread_pool: Arc<ThreadPool>,
-        frame_queue: Arc<RwLock<VecDeque<(u32, FractalParams, Option<Span>)>>>,
-        shutdown: Arc<AtomicBool>,
-    ) {
-        while !shutdown.load(Ordering::Relaxed) {
-            let work = {
-                let mut queue = frame_queue.write().unwrap();
-                queue.pop_front()
+            let tile_work = TileWork {
+                tile_id,
+                frame_id,
+                x_start,
+                y_start,
+                params,
+                parent_span: parent_span.clone(),
             };
 
-            if let Some((frame_id, params, parent_span)) = work {
-                let schedule_span = span!(
-                    Level::INFO,
-                    "schedule_frame",
-                    compute_id = id,
-                    frame_id = frame_id
-                );
-                let _schedule_guard = schedule_span.enter();
-
-                // Submit preprocessing work to thread pool with parent span
-                let preprocess_data = vec![params.time; 1000];
-                thread_pool.submit_work(WorkerMessage::PreprocessData(
-                    preprocess_data,
-                    parent_span.clone(),
-                ));
-
-                // Use tile-based computation - schedule all tiles for this frame
-                Self::schedule_tiles_for_frame(
-                    Arc::clone(&thread_pool),
-                    frame_id,
-                    params,
-                    parent_span.clone(),
-                );
-
-                // Simulate complex scheduling patterns
-                if frame_id % 5 == 0 {
-                    thread_pool.synchronize(frame_id);
-                }
-
-                thread::sleep(Duration::from_millis(1));
-            } else {
-                thread::sleep(Duration::from_millis(10));
-            }
-        }
-    }
-
-    fn schedule_frame(&self, frame_id: u32, params: FractalParams, parent_span: Option<Span>) {
-        let mut queue = self.frame_queue.write().unwrap();
-        queue.push_back((frame_id, params, parent_span));
-    }
-
-    fn schedule_tiles_for_frame(
-        thread_pool: Arc<ThreadPool>,
-        frame_id: u32,
-        params: FractalParams,
-        parent_span: Option<Span>,
-    ) {
-        // Create tiles for the frame
-        let mut tile_id = 0;
-
-        for tile_y in 0..TILES_Y {
-            for tile_x in 0..TILES_X {
-                let x_start = tile_x * TILE_SIZE;
-                let y_start = tile_y * TILE_SIZE;
-                let width = (TILE_SIZE).min(WIDTH - x_start);
-                let height = (TILE_SIZE).min(HEIGHT - y_start);
-
-                let tile_work = TileWork {
-                    tile_id,
-                    frame_id,
-                    x_start,
-                    y_start,
-                    width,
-                    height,
-                    params,
-                    parent_span: parent_span.clone(),
-                };
-
-                // For now, submit all tiles without dependencies
-                // TODO: Add dependency logic for neighboring tiles
-                thread_pool.submit_work(WorkerMessage::ComputeTile(tile_work));
-
-                tile_id += 1;
-            }
-        }
-    }
-}
-
-impl Drop for ComputeScheduler {
-    fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Relaxed);
-        for thread in self.compute_threads.drain(..) {
-            thread.join().ok();
+            thread_pool.submit_work(WorkerMessage::ComputeTile(tile_work));
+            tile_id += 1;
         }
     }
 }
@@ -929,7 +455,6 @@ struct VulkanRenderer {
     cpu_data_image: Arc<ImageView>,
     params_buffer: Subbuffer<FractalParams>,
     thread_pool: Arc<ThreadPool>,
-    scheduler: ComputeScheduler,
     #[allow(dead_code)]
     surface: Arc<Surface>,
     swapchain: Arc<Swapchain>,
@@ -943,9 +468,6 @@ impl VulkanRenderer {
 
         // Create thread pool first
         let thread_pool = Arc::new(ThreadPool::new(WORKER_THREADS));
-
-        // Create compute scheduler
-        let scheduler = ComputeScheduler::new(Arc::clone(&thread_pool));
 
         // Create window
         let window = Arc::new(
@@ -1005,7 +527,6 @@ impl VulkanRenderer {
             cpu_data_image,
             params_buffer,
             thread_pool,
-            scheduler,
             surface,
             swapchain,
             swapchain_images,
@@ -1357,7 +878,7 @@ impl VulkanRenderer {
         }
 
         // Schedule tile-based parameter computation (much lighter than fractal)
-        ComputeScheduler::schedule_tiles_for_frame(
+        schedule_tiles_for_frame(
             Arc::clone(&self.thread_pool),
             frame_id,
             params,

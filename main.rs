@@ -69,8 +69,8 @@ impl Default for FractalParams {
             zoom: 1.0,
             center_x: 0.0,
             center_y: 0.0,
-            julia_c_real: -0.4,
-            julia_c_imag: 0.6,
+            julia_c_real: -0.7,
+            julia_c_imag: 0.0,
             time: 0.0,
         }
     }
@@ -729,10 +729,10 @@ impl VulkanRenderer {
                             if (z_real_squared + z_imag_squared > 4.0) {
                                 float smooth_iter = float(i) + 1.0 - log(log(sqrt(z_real_squared + z_imag_squared))) / log(2.0);
                                 
-                                // Simplified color scheme - subtle blues and grays
+                                // High contrast color scheme
                                 float normalized = smooth_iter / float(params.max_iterations);
-                                float gray_level = 0.2 + normalized * 0.6;
-                                vec3 rgb = vec3(gray_level * 0.8, gray_level * 0.9, gray_level);
+                                float brightness = 0.3 + normalized * 0.7;
+                                vec3 rgb = vec3(brightness * 0.6, brightness * 0.8, brightness);
                                 imageStore(img, pixel_coords, vec4(rgb, 1.0));
                                 return;
                             }
@@ -745,8 +745,8 @@ impl VulkanRenderer {
                             iteration = i;
                         }
                         
-                        // Simple interior color - dark gray
-                        vec3 color = vec3(0.05, 0.05, 0.08);
+                        // Dark background for good contrast
+                        vec3 color = vec3(0.0, 0.0, 0.02);
                         imageStore(img, pixel_coords, vec4(color, 1.0));
                     }
                 "#

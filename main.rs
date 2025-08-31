@@ -165,7 +165,7 @@ struct ThreadPool {
 }
 
 impl ThreadPool {
-    fn new(num_threads: usize) -> Self {
+    fn new(num_threads: usize) -> Result<Self, std::io::Error> {
         let (work_sender, work_receiver) = unbounded::<WorkerMessage>();
         let (result_sender, result_receiver) = unbounded::<WorkerResult>();
         let work_receiver = Arc::new(work_receiver);
@@ -187,23 +187,25 @@ impl ThreadPool {
             let recalib_trigger = Arc::clone(&recalibration_trigger);
             let global_state_ref = Arc::clone(&global_state);
 
-            let handle = thread::spawn(move || {
-                Self::worker_thread(
-                    id,
-                    work_receiver,
-                    result_sender,
-                    barrier,
-                    shutdown,
-                    work_counter,
-                    recalib_trigger,
-                    global_state_ref,
-                );
-            });
+            let handle = thread::Builder::new()
+                .name(format!("fractal-worker-{}", id))
+                .spawn(move || {
+                    Self::worker_thread(
+                        id,
+                        work_receiver,
+                        result_sender,
+                        barrier,
+                        shutdown,
+                        work_counter,
+                        recalib_trigger,
+                        global_state_ref,
+                    );
+                })?;
 
             workers.push(handle);
         }
 
-        ThreadPool {
+        Ok(ThreadPool {
             workers,
             sender: work_sender,
             result_receiver,
@@ -213,7 +215,7 @@ impl ThreadPool {
             completed_tiles,
             recalibration_trigger,
             global_state,
-        }
+        })
     }
 
     fn worker_thread(
@@ -385,15 +387,18 @@ impl ThreadPool {
             cvar.notify_all(); // Notify all workers of recalibration
 
             // Reset recalibration flag after processing window
-            thread::spawn({
-                let trigger_arc = Arc::clone(&self.recalibration_trigger);
-                move || {
-                    thread::sleep(Duration::from_millis(500));
-                    if let Ok(mut t) = trigger_arc.0.lock() {
-                        *t = false;
+            thread::Builder::new()
+                .name("recalib-reset".to_string())
+                .spawn({
+                    let trigger_arc = Arc::clone(&self.recalibration_trigger);
+                    move || {
+                        thread::sleep(Duration::from_millis(500));
+                        if let Ok(mut t) = trigger_arc.0.lock() {
+                            *t = false;
+                        }
                     }
-                }
-            });
+                })
+                .ok(); // Ignore spawn errors for cleanup thread
         }
     }
 }
@@ -463,7 +468,7 @@ impl VulkanRenderer {
         let _enter = span.enter();
 
         // Create thread pool first
-        let thread_pool = Arc::new(ThreadPool::new(WORKER_THREADS));
+        let thread_pool = Arc::new(ThreadPool::new(WORKER_THREADS)?);
 
         // Create window
         let window = Arc::new(
@@ -1111,6 +1116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // FPS tracking variables
     let mut fps_timer = std::time::Instant::now();
     let mut fps_frame_count = 0u32;
+    #[allow(unused_assignments)]
     let mut current_fps = 0.0f32;
     let mut frame_times = VecDeque::with_capacity(60);
     let mut last_frame_time = std::time::Instant::now();

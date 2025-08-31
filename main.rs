@@ -42,7 +42,6 @@ const WIDTH: u32 = 1920;
 const HEIGHT: u32 = 1080;
 const ITERATIONS: u32 = 256;
 const WORKER_THREADS: usize = 8;
-const COMPUTE_THREADS: usize = 4;
 const TILE_SIZE: u32 = 64; // Each tile is 64x64 pixels
 const TILES_X: u32 = (WIDTH + TILE_SIZE - 1) / TILE_SIZE;
 const TILES_Y: u32 = (HEIGHT + TILE_SIZE - 1) / TILE_SIZE;
@@ -89,8 +88,6 @@ enum WorkerMessage {
 struct TileWork {
     tile_id: u32,
     frame_id: u32,
-    x_start: u32,
-    y_start: u32,
     params: FractalParams,
     parent_span: Option<Span>,
 }
@@ -163,6 +160,7 @@ struct ThreadPool {
     work_counter: Arc<AtomicU64>,
     completed_tiles: Arc<RwLock<HashMap<u32, HashMap<u32, TileResult>>>>, // frame_id -> tile_id -> result
     recalibration_trigger: Arc<(Mutex<bool>, Condvar)>, // System recalibration trigger
+    #[allow(dead_code)]
     global_state: Arc<Mutex<f32>>,                      // Global application state
 }
 
@@ -255,7 +253,7 @@ impl ThreadPool {
                             drop(trigger);
 
                             // Update critical system parameters
-                            if let Ok(mut state) = global_state_ref.lock() {
+                            if let Ok(mut state) = global_state.lock() {
                                 // Perform complex state recalculation
                                 for _ in 0..1000000 {
                                     *state = (*state * 1.1).sin();
@@ -291,7 +289,7 @@ impl ThreadPool {
                             drop(trigger);
 
                             // Update global processing state
-                            if let Ok(mut state) = global_state_ref.lock() {
+                            if let Ok(mut state) = global_state.lock() {
                                 // Complex state synchronization
                                 for _ in 0..2000000 {
                                     *state = (*state * 1.1 + 0.1).sin();
@@ -423,14 +421,12 @@ fn schedule_tiles_for_frame(
 
     for tile_y in 0..TILES_Y {
         for tile_x in 0..TILES_X {
-            let x_start = tile_x * TILE_SIZE;
-            let y_start = tile_y * TILE_SIZE;
+            let _x_start = tile_x * TILE_SIZE;
+            let _y_start = tile_y * TILE_SIZE;
 
             let tile_work = TileWork {
                 tile_id,
                 frame_id,
-                x_start,
-                y_start,
                 params,
                 parent_span: parent_span.clone(),
             };

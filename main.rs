@@ -430,8 +430,8 @@ struct ThreadPool {
     #[allow(dead_code)]
     work_counter: Arc<AtomicU64>,
     completed_tiles: Arc<RwLock<HashMap<u32, HashMap<u32, TileResult>>>>, // frame_id -> tile_id -> result
-    thundering_herd_trigger: Arc<(Mutex<bool>, Condvar)>, // For simulating thundering herd
-    shared_resource: Arc<Mutex<f32>>,                     // Shared resource for contention
+    recalibration_trigger: Arc<(Mutex<bool>, Condvar)>, // System recalibration trigger
+    global_state: Arc<Mutex<f32>>,                      // Global application state
 }
 
 impl ThreadPool {
@@ -443,8 +443,8 @@ impl ThreadPool {
         let shutdown = Arc::new(AtomicBool::new(false));
         let work_counter = Arc::new(AtomicU64::new(0));
         let completed_tiles = Arc::new(RwLock::new(HashMap::new()));
-        let thundering_herd_trigger = Arc::new((Mutex::new(false), Condvar::new()));
-        let shared_resource = Arc::new(Mutex::new(0.0f32));
+        let recalibration_trigger = Arc::new((Mutex::new(false), Condvar::new()));
+        let global_state = Arc::new(Mutex::new(0.0f32));
 
         let mut workers = Vec::new();
 
@@ -454,8 +454,8 @@ impl ThreadPool {
             let barrier = Arc::clone(&barrier);
             let shutdown = Arc::clone(&shutdown);
             let work_counter = Arc::clone(&work_counter);
-            let herd_trigger = Arc::clone(&thundering_herd_trigger);
-            let shared_res = Arc::clone(&shared_resource);
+            let recalib_trigger = Arc::clone(&recalibration_trigger);
+            let global_state_ref = Arc::clone(&global_state);
 
             let handle = thread::spawn(move || {
                 Self::worker_thread(
@@ -465,8 +465,8 @@ impl ThreadPool {
                     barrier,
                     shutdown,
                     work_counter,
-                    herd_trigger,
-                    shared_res,
+                    recalib_trigger,
+                    global_state_ref,
                 );
             });
 
@@ -481,8 +481,8 @@ impl ThreadPool {
             shutdown,
             work_counter,
             completed_tiles,
-            thundering_herd_trigger,
-            shared_resource,
+            recalibration_trigger,
+            global_state,
         }
     }
 
@@ -493,8 +493,8 @@ impl ThreadPool {
         barrier: Arc<Barrier>,
         shutdown: Arc<AtomicBool>,
         work_counter: Arc<AtomicU64>,
-        herd_trigger: Arc<(Mutex<bool>, Condvar)>,
-        shared_resource: Arc<Mutex<f32>>,
+        recalib_trigger: Arc<(Mutex<bool>, Condvar)>,
+        global_state: Arc<Mutex<f32>>,
     ) {
         while !shutdown.load(Ordering::Relaxed) {
             let msg = receiver.recv();
@@ -546,17 +546,17 @@ impl ThreadPool {
                     let _work_guard = work_span.enter();
                     work_counter.fetch_add(1, Ordering::Relaxed);
 
-                    // Check for thundering herd trigger (non-blocking check)
-                    if let Ok(trigger) = herd_trigger.0.try_lock() {
+                    // Check for system recalibration (non-blocking check)
+                    if let Ok(trigger) = recalib_trigger.0.try_lock() {
                         if *trigger {
-                            // All threads wake up and compete for shared resource
+                            // System needs recalibration - update global state
                             drop(trigger);
 
-                            // Simulate thundering herd - all threads try to lock shared resource
-                            if let Ok(mut shared) = shared_resource.lock() {
-                                // Expensive operation while holding lock
+                            // Update critical system parameters
+                            if let Ok(mut state) = global_state_ref.lock() {
+                                // Perform complex state recalculation
                                 for _ in 0..1000000 {
-                                    *shared = (*shared * 1.1).sin();
+                                    *state = (*state * 1.1).sin();
                                 }
                             }
                         }
@@ -604,20 +604,18 @@ impl ThreadPool {
 
                     work_counter.fetch_add(1, Ordering::Relaxed);
 
-                    // Check for thundering herd and create contention
-                    if let Ok(trigger) = herd_trigger.0.try_lock() {
+                    // Check for system recalibration and update state
+                    if let Ok(trigger) = recalib_trigger.0.try_lock() {
                         if *trigger {
                             drop(trigger);
-                            println!("Worker {} participating in thundering herd!", id);
 
-                            // All threads compete for shared resource
-                            if let Ok(mut shared) = shared_resource.lock() {
-                                println!("Worker {} got the lock!", id);
+                            // Update global processing state
+                            if let Ok(mut state) = global_state_ref.lock() {
+                                // Complex state synchronization
                                 for _ in 0..2000000 {
-                                    // More expensive work
-                                    *shared = (*shared * 1.1 + 0.1).sin();
+                                    *state = (*state * 1.1 + 0.1).sin();
                                 }
-                                thread::sleep(Duration::from_millis(50)); // Hold lock longer
+                                thread::sleep(Duration::from_millis(50)); // State consistency delay
                             }
                         }
                     }
@@ -751,26 +749,20 @@ impl ThreadPool {
         tiles.remove(&frame_id).unwrap_or_default()
     }
 
-    fn trigger_thundering_herd(&self) {
-        println!(
-            "🔥 TRIGGERING THUNDERING HERD! All {} workers will compete!",
-            WORKER_THREADS
-        );
-
-        // Set the trigger flag and wake all threads
-        let (lock, cvar) = &*self.thundering_herd_trigger;
+    fn trigger_system_recalibration(&self) {
+        // Periodic system recalibration for accuracy
+        let (lock, cvar) = &*self.recalibration_trigger;
         if let Ok(mut trigger) = lock.lock() {
             *trigger = true;
-            cvar.notify_all(); // Wake all waiting threads at once
+            cvar.notify_all(); // Notify all workers of recalibration
 
-            // Reset after a longer time to ensure contention
+            // Reset recalibration flag after processing window
             thread::spawn({
-                let trigger_arc = Arc::clone(&self.thundering_herd_trigger);
+                let trigger_arc = Arc::clone(&self.recalibration_trigger);
                 move || {
-                    thread::sleep(Duration::from_millis(500)); // Longer window for chaos
+                    thread::sleep(Duration::from_millis(500));
                     if let Ok(mut t) = trigger_arc.0.lock() {
                         *t = false;
-                        println!("✅ Thundering herd window closed");
                     }
                 }
             });
@@ -1358,10 +1350,10 @@ impl VulkanRenderer {
         let span = span!(Level::INFO, "render_frame", frame_id = frame_id);
         let _enter = span.enter();
 
-        // Trigger thundering herd every 3-5 seconds (frame_id at 60fps)
+        // Periodic system recalibration for rendering accuracy
         if frame_id % 240 == 180 {
             // Every ~4 seconds at 60fps
-            self.thread_pool.trigger_thundering_herd();
+            self.thread_pool.trigger_system_recalibration();
         }
 
         // Schedule tile-based parameter computation (much lighter than fractal)
@@ -1382,14 +1374,14 @@ impl VulkanRenderer {
         // Upload small CPU-computed influence data to GPU
         self.upload_cpu_data_to_gpu(&influence_data)?;
 
-        // Occasionally create additional contention
+        // Periodic data validation and preprocessing
         if frame_id % 120 == 60 {
             // Every 2 seconds
-            // Submit work that causes contention
+            // Submit validation work for data integrity
             for _ in 0..WORKER_THREADS {
-                let dummy_data = vec![frame_id as f32; 1000];
+                let validation_data = vec![frame_id as f32; 1000];
                 self.thread_pool
-                    .submit_work(WorkerMessage::PreprocessData(dummy_data, None));
+                    .submit_work(WorkerMessage::PreprocessData(validation_data, None));
             }
         }
 

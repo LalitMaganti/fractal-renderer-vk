@@ -729,12 +729,10 @@ impl VulkanRenderer {
                             if (z_real_squared + z_imag_squared > 4.0) {
                                 float smooth_iter = float(i) + 1.0 - log(log(sqrt(z_real_squared + z_imag_squared))) / log(2.0);
                                 
-                                // Color based on iterations and CPU influence
-                                float hue = smooth_iter / float(params.max_iterations) * 3.0 + params.time * 0.1 + trap_min + cpu_influence.b * 0.5;
-                                float saturation = 0.8 - trap_min * 0.3;
-                                float value = 1.0 - pow(smooth_iter / float(params.max_iterations), 0.5);
-                                
-                                vec3 rgb = hsv_to_rgb(hue, saturation, value);
+                                // Simplified color scheme - subtle blues and grays
+                                float normalized = smooth_iter / float(params.max_iterations);
+                                float gray_level = 0.2 + normalized * 0.6;
+                                vec3 rgb = vec3(gray_level * 0.8, gray_level * 0.9, gray_level);
                                 imageStore(img, pixel_coords, vec4(rgb, 1.0));
                                 return;
                             }
@@ -747,9 +745,8 @@ impl VulkanRenderer {
                             iteration = i;
                         }
                         
-                        // Interior color
-                        float interior = trap_min * 3.0;
-                        vec3 color = vec3(interior * 0.1, interior * 0.2, interior * 0.3);
+                        // Simple interior color - dark gray
+                        vec3 color = vec3(0.05, 0.05, 0.08);
                         imageStore(img, pixel_coords, vec4(color, 1.0));
                     }
                 "#
@@ -1174,9 +1171,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let mut params = FractalParams::default();
                 params.time = elapsed;
-                params.zoom = 1.0 + (elapsed * 0.1).sin() * 0.5;
-                params.center_x = (elapsed * 0.05).cos() * 0.3;
-                params.center_y = (elapsed * 0.03).sin() * 0.3;
+                params.zoom = 1.0;
+                params.center_x = 0.0;
+                params.center_y = 0.0;
 
                 if let Err(_e) = renderer.render_frame(frame_count, params) {
                     // Silently handle render errors

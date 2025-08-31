@@ -696,46 +696,32 @@ impl VulkanRenderer {
                             return;
                         }
 
-                        // Get CPU-computed influence/parameters (small amount of data)
-                        vec4 cpu_influence = imageLoad(cpu_data, pixel_coords / 64); // Sample at tile level
-                        
                         // Convert to complex plane coordinates
                         float aspect_ratio = float(params.width) / float(params.height);
                         float real = (float(pixel_coords.x) / float(params.width) - 0.5) * 4.0 / params.zoom * aspect_ratio + params.center_x;
                         float imag = (float(pixel_coords.y) / float(params.height) - 0.5) * 4.0 / params.zoom + params.center_y;
                         
-                        // Apply CPU influence to starting position
-                        real += cpu_influence.r * 0.1;
-                        imag += cpu_influence.g * 0.1;
-                        
-                        // Julia set parameters with time variation
-                        float c_real = params.julia_c_real + 0.1 * sin(params.time);
-                        float c_imag = params.julia_c_imag + 0.1 * cos(params.time * 0.7);
+                        // Julia set parameters with subtle time variation
+                        float c_real = params.julia_c_real + 0.03 * sin(params.time * 0.2);
+                        float c_imag = params.julia_c_imag + 0.03 * cos(params.time * 0.15);
                         
                         // Julia iteration
                         float z_real = real;
                         float z_imag = imag;
-                        uint iteration = 0;
-                        float trap_min = 1000.0;
                         
                         for (uint i = 0; i < params.max_iterations; i++) {
                             float z_real_squared = z_real * z_real;
                             float z_imag_squared = z_imag * z_imag;
                             
-                            // Orbit trap for additional coloring
-                            float dist = sqrt((z_real - 0.5) * (z_real - 0.5) + z_imag * z_imag);
-                            trap_min = min(trap_min, dist);
-                            
                             if (z_real_squared + z_imag_squared > 4.0) {
+                                // Simple smooth iteration count
                                 float smooth_iter = float(i) + 1.0 - log(log(sqrt(z_real_squared + z_imag_squared))) / log(2.0);
                                 
-                                // Color based on iterations and CPU influence
-                                float hue = smooth_iter / float(params.max_iterations) * 3.0 + params.time * 0.1 + trap_min + cpu_influence.b * 0.5;
-                                float saturation = 0.8 - trap_min * 0.3;
-                                float value = 1.0 - pow(smooth_iter / float(params.max_iterations), 0.5);
+                                // Simple grayscale based on iteration count
+                                float intensity = 1.0 - smooth_iter / float(params.max_iterations);
+                                vec3 color = vec3(intensity);
                                 
-                                vec3 rgb = hsv_to_rgb(hue, saturation, value);
-                                imageStore(img, pixel_coords, vec4(rgb, 1.0));
+                                imageStore(img, pixel_coords, vec4(color, 1.0));
                                 return;
                             }
                             
@@ -744,12 +730,10 @@ impl VulkanRenderer {
                             
                             z_real = new_real;
                             z_imag = new_imag;
-                            iteration = i;
                         }
                         
-                        // Interior color
-                        float interior = trap_min * 3.0;
-                        vec3 color = vec3(interior * 0.1, interior * 0.2, interior * 0.3);
+                        // Interior color (black)
+                        vec3 color = vec3(0.0);
                         imageStore(img, pixel_coords, vec4(color, 1.0));
                     }
                 "#
@@ -1033,57 +1017,6 @@ impl VulkanRenderer {
 
         Ok(())
     }
-
-    // Removed - no longer needed since GPU does the rendering
-
-    // Removed - no longer needed since GPU does the rendering directly
-
-    #[allow(dead_code)]
-    pub fn benchmark(&mut self, frames: u32) -> Result<(), Box<dyn std::error::Error>> {
-        let mut params = FractalParams::default();
-        let start_time = Instant::now();
-
-        // Spawn monitoring thread
-        let work_counter = Arc::clone(&self.thread_pool.work_counter);
-        let monitor_handle = thread::spawn(move || {
-            loop {
-                thread::sleep(Duration::from_secs(1));
-                let current_count = work_counter.load(Ordering::Relaxed);
-                if current_count > (frames as u64 * 3) {
-                    break;
-                }
-            }
-        });
-
-        for frame in 0..frames {
-            params.time = frame as f32 * 0.016; // Simulate 60 FPS timing
-            params.zoom = 1.0 + (params.time * 0.1).sin() * 0.5;
-            params.center_x = (params.time * 0.05).cos() * 0.3;
-            params.center_y = (params.time * 0.03).sin() * 0.3;
-
-            if frame % 10 == 0 {
-                // Synchronize all threads periodically
-                self.thread_pool.synchronize(frame);
-            }
-
-            self.render_frame(frame, params)?;
-
-            // Add some thread contention
-            if frame % 5 == 0 {
-                let work_data = vec![frame as f32; 5000];
-                self.thread_pool
-                    .submit_work(WorkerMessage::PreprocessData(work_data, None));
-            }
-        }
-
-        let elapsed = start_time.elapsed();
-        let _fps = frames as f64 / elapsed.as_secs_f64();
-        let _total_work = self.thread_pool.get_work_count();
-
-        monitor_handle.join().ok();
-
-        Ok(())
-    }
 }
 
 fn setup_tracing() {
@@ -1174,9 +1107,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let mut params = FractalParams::default();
                 params.time = elapsed;
-                params.zoom = 1.0 + (elapsed * 0.1).sin() * 0.5;
-                params.center_x = (elapsed * 0.05).cos() * 0.3;
-                params.center_y = (elapsed * 0.03).sin() * 0.3;
 
                 if let Err(_e) = renderer.render_frame(frame_count, params) {
                     // Silently handle render errors

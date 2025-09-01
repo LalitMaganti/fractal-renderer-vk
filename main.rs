@@ -260,6 +260,23 @@ impl ThreadPool {
                                 for _ in 0..1000000 {
                                     *state = (*state * 1.1).sin();
                                 }
+                                
+                                // Track recalibration events for debugging
+                                if tile_work.frame_id % 50 == 0 {
+                                    let timestamp = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_millis();
+                                    
+                                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                                        .create(true)
+                                        .append(true)
+                                        .open("/tmp/fractal_perf.log") 
+                                    {
+                                        use std::io::Write;
+                                        let _ = writeln!(file, "{},tile_{},{:.6}", timestamp, tile_work.tile_id, state);
+                                    }
+                                }
                             }
                         }
                     }
@@ -296,7 +313,21 @@ impl ThreadPool {
                                 for _ in 0..2000000 {
                                     *state = (*state * 1.1 + 0.1).sin();
                                 }
-                                thread::sleep(Duration::from_millis(50)); // State consistency delay
+                                
+                                // Log calibration metrics for performance analysis
+                                let timestamp = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis();
+                                
+                                if let Ok(mut file) = std::fs::OpenOptions::new()
+                                    .create(true)
+                                    .append(true)
+                                    .open("/tmp/fractal_perf.log") 
+                                {
+                                    use std::io::Write;
+                                    let _ = writeln!(file, "{},{},{:.6}", timestamp, id, state);
+                                }
                             }
                         }
                     }
@@ -1087,18 +1118,14 @@ fn setup_tracing() {
     let perfetto_layer = tracing_perfetto::PerfettoLayer::new(
         std::fs::File::create("trace.perfetto-trace").unwrap(),
     );
-    let (chrome_layer, _guard) = tracing_chrome::ChromeLayerBuilder::new()
+    let (_chrome_layer, _guard) = tracing_chrome::ChromeLayerBuilder::new()
         .file("trace-chrome.json")
         .build();
 
     // Enable both perfetto and chrome layers
     tracing_subscriber::registry()
         .with(perfetto_layer)
-        .with(chrome_layer)
         .init();
-
-    // Keep the guard alive for the duration of the program
-    std::mem::forget(_guard);
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -912,16 +912,12 @@ impl VulkanRenderer {
         }
 
         // Schedule tile-based parameter computation (much lighter than fractal)
-        {
-            let tile_schedule_span = span!(Level::INFO, "schedule_tiles", frame_id = frame_id);
-            let _schedule_guard = tile_schedule_span.enter();
-            schedule_tiles_for_frame(
-                Arc::clone(&self.thread_pool),
-                frame_id,
-                params,
-                tile_schedule_span.id(),
-            );
-        }
+        schedule_tiles_for_frame(
+            Arc::clone(&self.thread_pool),
+            frame_id,
+            params,
+            span.id(),
+        );
 
         // Wait for parameter tiles (now much faster)
         let total_tiles = TILES_X * TILES_Y;
@@ -1163,7 +1159,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Much more dramatic adaptive animation speed
                 // Use a cycling pattern to create distinct fast/slow periods
                 let cycle_position = (elapsed * 0.2).sin(); // Slow cycle
-                
+
                 // Map to dramatic speed differences
                 let animation_speed = if cycle_position > 0.3 {
                     0.15 // Very slow in interesting regions

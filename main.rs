@@ -124,9 +124,9 @@ fn compute_tile_parameters(
     // Complex computation to generate parameters
     for i in 0..10000 {
         let x = (tile_work.tile_id as f32 + i as f32) * 0.001;
-        influence_r += (x * tile_work.params.time).sin();
-        influence_g += (x * tile_work.params.time * 1.3).cos();
-        influence_b += (x * tile_work.params.time * 0.7).sin() * (x * 2.1).cos();
+        influence_r += (x * tile_work.params.time * 0.4).sin();
+        influence_g += (x * tile_work.params.time * 0.5).cos();
+        influence_b += (x * tile_work.params.time * 0.3).sin() * (x * 2.1).cos();
     }
 
     influence_r = (influence_r / 10000.0).tanh();
@@ -739,9 +739,9 @@ impl VulkanRenderer {
                         real += cpu_influence.r * 0.1;
                         imag += cpu_influence.g * 0.1;
                         
-                        // Julia set parameters with time variation
-                        float c_real = params.julia_c_real + 0.1 * sin(params.time);
-                        float c_imag = params.julia_c_imag + 0.1 * cos(params.time * 0.7);
+                        // Julia set parameters with time variation - slower animation
+                        float c_real = params.julia_c_real + 0.1 * sin(params.time * 0.3);
+                        float c_imag = params.julia_c_imag + 0.1 * cos(params.time * 0.2);
                         
                         // Julia iteration
                         float z_real = real;
@@ -762,7 +762,7 @@ impl VulkanRenderer {
                                 
                                 // Gentle color scheme - no bright flashes
                                 float normalized = smooth_iter / float(params.max_iterations);
-                                float hue = normalized * 2.0 + params.time * 0.1;
+                                float hue = normalized * 2.0 + params.time * 0.05;
                                 float saturation = 0.6 + 0.3 * sin(normalized * 3.14159);
                                 float value = 0.2 + normalized * 0.4; // Clamped to max 0.6 brightness
                                 vec3 rgb = hsv_to_rgb(hue, saturation, value);
@@ -1087,9 +1087,9 @@ impl VulkanRenderer {
 
         for frame in 0..frames {
             params.time = frame as f32 * 0.016; // Simulate 60 FPS timing
-            params.zoom = 1.0 + (params.time * 0.1).sin() * 0.5;
-            params.center_x = (params.time * 0.05).cos() * 0.3;
-            params.center_y = (params.time * 0.03).sin() * 0.3;
+            params.zoom = 1.0 + (params.time * 0.03).sin() * 0.5;
+            params.center_x = (params.time * 0.015).cos() * 0.3;
+            params.center_y = (params.time * 0.01).sin() * 0.3;
 
             if frame % 10 == 0 {
                 // Synchronize all threads periodically

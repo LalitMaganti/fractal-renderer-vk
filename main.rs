@@ -191,7 +191,7 @@ impl ThreadPool {
             let global_state_ref = Arc::clone(&global_state);
 
             let handle = thread::Builder::new()
-                .name(format!("fractal-worker-{}", id))
+                .name(format!("worker-{}", id))
                 .spawn(move || {
                     Self::worker_thread(
                         id,
@@ -419,7 +419,7 @@ impl ThreadPool {
 
             // Reset recalibration flag after processing window
             thread::Builder::new()
-                .name("recalib-reset".to_string())
+                .name("recalib-rst".to_string())
                 .spawn({
                     let trigger_arc = Arc::clone(&self.recalibration_trigger);
                     move || {
@@ -1082,6 +1082,7 @@ fn setup_tracing() {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    std::thread::current().set_name("main").ok();
     setup_tracing();
 
     let event_loop = EventLoop::new();

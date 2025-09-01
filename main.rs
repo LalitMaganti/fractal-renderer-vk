@@ -909,12 +909,15 @@ impl VulkanRenderer {
         }
 
         // Schedule tile-based parameter computation (much lighter than fractal)
+        let tile_schedule_span = span!(Level::INFO, "schedule_tiles", frame_id = frame_id);
+        let _schedule_guard = tile_schedule_span.enter();
         schedule_tiles_for_frame(
             Arc::clone(&self.thread_pool),
             frame_id,
             params,
-            Some(span.clone()),
+            Some(tile_schedule_span.clone()),
         );
+        drop(_schedule_guard);
 
         // Wait for parameter tiles (now much faster)
         let total_tiles = TILES_X * TILES_Y;

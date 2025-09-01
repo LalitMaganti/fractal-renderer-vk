@@ -5,7 +5,7 @@ use std::sync::{Arc, Barrier, Condvar, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
 
-use tracing::{Level, Span, span};
+use tracing::{Level, span, Id};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use vulkano::VulkanLibrary;
@@ -79,7 +79,7 @@ impl Default for FractalParams {
 #[derive(Debug, Clone)]
 enum WorkerMessage {
     ComputeTile(TileWork),
-    PreprocessData(Vec<f32>, Option<Span>),
+    PreprocessData(Vec<f32>, Option<Id>),
     #[allow(dead_code)] // Used for worker synchronization
     Synchronize(u32),
     Shutdown,
@@ -90,7 +90,7 @@ struct TileWork {
     tile_id: u32,
     frame_id: u32,
     params: FractalParams,
-    parent_span: Option<Span>,
+    parent_span_id: Option<Id>,
 }
 
 #[derive(Debug)]
@@ -244,8 +244,8 @@ impl ThreadPool {
                         frame_id = tile_work.frame_id
                     );
 
-                    if let Some(parent) = &tile_work.parent_span {
-                        work_span.follows_from(parent.clone());
+                    if let Some(parent_id) = &tile_work.parent_span_id {
+                        work_span.follows_from(parent_id.clone());
                     }
 
                     let _work_guard = work_span.enter();
@@ -288,7 +288,7 @@ impl ThreadPool {
                     let result = compute_tile_parameters(&tile_work, None);
                     sender.send(WorkerResult::TileComplete(result)).unwrap();
                 }
-                Ok(WorkerMessage::PreprocessData(data, parent_span)) => {
+                Ok(WorkerMessage::PreprocessData(data, parent_span_id)) => {
                     let work_span = span!(
                         Level::INFO,
                         "preprocess_data",
@@ -297,8 +297,8 @@ impl ThreadPool {
                     );
 
                     // Establish follows_from relationship if parent span exists
-                    if let Some(parent) = parent_span {
-                        work_span.follows_from(parent);
+                    if let Some(parent_id) = parent_span_id {
+                        work_span.follows_from(parent_id);
                     }
 
                     let _work_guard = work_span.enter();
@@ -450,7 +450,7 @@ fn schedule_tiles_for_frame(
     thread_pool: Arc<ThreadPool>,
     frame_id: u32,
     params: FractalParams,
-    parent_span: Option<Span>,
+    parent_span_id: Option<Id>,
 ) {
     // Create tiles for the frame
     let mut tile_id = 0;
@@ -464,7 +464,7 @@ fn schedule_tiles_for_frame(
                 tile_id,
                 frame_id,
                 params,
-                parent_span: parent_span.clone(),
+                parent_span_id: parent_span_id.clone(),
             };
 
             thread_pool.submit_work(WorkerMessage::ComputeTile(tile_work));
@@ -915,7 +915,7 @@ impl VulkanRenderer {
             Arc::clone(&self.thread_pool),
             frame_id,
             params,
-            Some(tile_schedule_span.clone()),
+            tile_schedule_span.id(),
         );
         drop(_schedule_guard);
 

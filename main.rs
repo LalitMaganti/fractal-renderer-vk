@@ -856,11 +856,11 @@ impl VulkanRenderer {
                             if (z_real_squared + z_imag_squared > 4.0) {
                                 float smooth_iter = float(i) + 1.0 - log(log(sqrt(z_real_squared + z_imag_squared))) / log(2.0);
                                 
-                                // Gentle color scheme - no bright flashes
+                                // Bright, vibrant color scheme for better visibility
                                 float normalized = smooth_iter / float(params.max_iterations);
-                                float hue = normalized * 2.0 + params.time * 0.05;
-                                float saturation = 0.6 + 0.3 * sin(normalized * 3.14159);
-                                float value = 0.2 + normalized * 0.4; // Clamped to max 0.6 brightness
+                                float hue = normalized * 3.0 + params.time * 0.08;
+                                float saturation = 0.7 + 0.3 * sin(normalized * 3.14159);
+                                float value = 0.5 + normalized * 0.5; // Increased brightness range 0.5-1.0
                                 vec3 rgb = hsv_to_rgb(hue, saturation, value);
                                 imageStore(img, pixel_coords, vec4(rgb, 1.0));
                                 return;
@@ -874,8 +874,8 @@ impl VulkanRenderer {
                             iteration = i;
                         }
                         
-                        // Very dark background - no flashing
-                        vec3 color = vec3(0.01, 0.01, 0.05);
+                        // Darker but more visible background for contrast
+                        vec3 color = vec3(0.05, 0.05, 0.15);
                         imageStore(img, pixel_coords, vec4(color, 1.0));
                     }
                 "#

@@ -1,3 +1,4 @@
+use clap::Parser;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1193,16 +1194,29 @@ impl VulkanRenderer {
     // Removed - no longer needed since GPU does the rendering directly
 }
 
-fn setup_tracing() {
-    let perfetto_layer = tracing_perfetto::PerfettoLayer::new(
-        std::fs::File::create("trace.perfetto-trace").unwrap(),
-    );
+fn setup_tracing(trace_file: Option<String>) {
+    if let Some(file_path) = trace_file {
+        let perfetto_layer = tracing_perfetto::PerfettoLayer::new(
+            std::fs::File::create(file_path).expect("Failed to create trace file"),
+        );
 
-    // Enable both perfetto and chrome layers
-    tracing_subscriber::registry().with(perfetto_layer).init();
+        // Enable perfetto tracing with custom file
+        tracing_subscriber::registry().with(perfetto_layer).init();
+    }
+    // If no trace file specified, no tracing is enabled
+}
+
+#[derive(Parser, Debug)]
+#[command(name = "fractal-renderer-vk")]
+#[command(about = "Multi-threaded GPU Fractal Renderer", long_about = None)]
+struct Args {
+    /// Enable tracing and specify the output file path
+    #[arg(long, value_name = "FILE")]
+    trace: Option<String>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
     // Set main thread name (cross-platform)
     #[cfg(target_os = "linux")]
     unsafe {
@@ -1212,7 +1226,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         libc::pthread_setname_np(b"main\0".as_ptr() as *const i8);
     }
-    setup_tracing();
+    setup_tracing(args.trace);
 
     let event_loop = EventLoop::new();
     let (mut renderer, window) = VulkanRenderer::new(&event_loop)?;

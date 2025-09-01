@@ -252,19 +252,11 @@ impl ThreadPool {
                     work_counter.fetch_add(1, Ordering::Relaxed);
 
                     // Check for system recalibration (non-blocking check)
-                    let recalib_check_span = span!(
-                        Level::DEBUG,
-                        "check_recalibration_trigger",
-                        tile_id = tile_work.tile_id,
-                        frame_id = tile_work.frame_id
-                    );
-                    let _recalib_check_enter = recalib_check_span.enter();
-
                     if let Ok(trigger) = recalib_trigger.0.try_lock() {
                         if *trigger {
-                            drop(_recalib_check_enter);
 
                             let recalib_span = span!(
+                                parent: &work_span,
                                 Level::INFO,
                                 "process_recalibration",
                                 worker_id = id,
@@ -277,8 +269,12 @@ impl ThreadPool {
                             drop(trigger);
 
                             // Update critical system parameters
-                            let state_update_span =
-                                span!(Level::DEBUG, "update_global_state", iterations = 1000000);
+                            let state_update_span = span!(
+                                parent: &recalib_span,
+                                Level::DEBUG,
+                                "update_global_state",
+                                iterations = 1000000
+                            );
                             let _state_enter = state_update_span.enter();
 
                             if let Ok(mut state) = global_state.lock() {
@@ -440,9 +436,6 @@ impl ThreadPool {
                     }
                 })
                 .ok(); // Ignore spawn errors for cleanup thread
-        } else {
-            let lock_failed_span = span!(Level::WARN, "recalibration_lock_failed");
-            let _failed_enter = lock_failed_span.enter();
         }
     }
 }

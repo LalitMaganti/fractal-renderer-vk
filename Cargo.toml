@@ -19,11 +19,12 @@ libc = "0.2"
 
 [profile.dev]
 opt-level = 1
+debug = true
 
 [profile.release]
 opt-level = 3
 lto = true
-debug = 1
+debug = true
 
 [[bin]]
 name = "fractal-renderer-vk"

@@ -40,7 +40,8 @@ PERF_STDERR=$(mktemp)
 
 # Run the fractal binary with error capture
 # Capture perf's stderr separately to diagnose perf issues
-{ perf record -k mono -g -o "$OUTPUT_DIR/perf.data" -- \
+# --call-graph=dwarf enables unwind tables for better stack traces
+{ perf record -k mono -g --call-graph=dwarf -o "$OUTPUT_DIR/perf.data" -- \
     "$FRACTAL_BIN" --trace "$OUTPUT_DIR/fractal.pftrace" > "$FRACTAL_STDOUT" 2> "$FRACTAL_STDERR"; } 2> "$PERF_STDERR" &
 PERF_PID=$!
 
@@ -121,6 +122,24 @@ echo "  Converting perf data to text..."
 if ! perf script -i "$OUTPUT_DIR/perf.data" > "$OUTPUT_DIR/fractal.perftext" 2>/dev/null; then
     echo -e "${RED}Warning: Failed to convert perf data${NC}"
     rm -f "$OUTPUT_DIR/fractal.perftext"
+else
+    # Compress the perf text output
+    echo "  Compressing perf text output..."
+    gzip -c "$OUTPUT_DIR/fractal.perftext" > "$OUTPUT_DIR/fractal.perftext.gz"
+    
+    # Generate flamegraph if FlameGraph tools are available
+    echo "  Generating flamegraph..."
+    FLAMEGRAPH_DIR="$HOME/FlameGraph"
+    if [ -d "$FLAMEGRAPH_DIR" ] && [ -x "$FLAMEGRAPH_DIR/stackcollapse-perf.pl" ] && [ -x "$FLAMEGRAPH_DIR/flamegraph.pl" ]; then
+        if gunzip -c "$OUTPUT_DIR/fractal.perftext.gz" | "$FLAMEGRAPH_DIR/stackcollapse-perf.pl" --all | "$FLAMEGRAPH_DIR/flamegraph.pl" > "$OUTPUT_DIR/fractal.svg" 2>/dev/null; then
+            echo -e "  ${GREEN}✓${NC} Flamegraph generated: $OUTPUT_DIR/fractal.svg"
+        else
+            echo -e "  ${YELLOW}Warning: Failed to generate flamegraph${NC}"
+        fi
+    else
+        echo -e "  ${YELLOW}Warning: FlameGraph tools not found at $FLAMEGRAPH_DIR${NC}"
+        echo "           Install with: git clone https://github.com/brendangregg/FlameGraph.git ~/FlameGraph"
+    fi
 fi
 
 # Convert trace-cmd data
@@ -162,12 +181,23 @@ else
     echo -e "  ${RED}✗${NC} $OUTPUT_DIR/fractal.pftrace     (Application trace) - FAILED"
 fi
 
+if [ -f "$OUTPUT_DIR/fractal.svg" ] && [ -s "$OUTPUT_DIR/fractal.svg" ]; then
+    echo -e "  ${GREEN}✓${NC} $OUTPUT_DIR/fractal.svg         (Flamegraph)"
+    CREATED_FILES=$((CREATED_FILES + 1))
+else
+    echo -e "  ${RED}✗${NC} $OUTPUT_DIR/fractal.svg         (Flamegraph) - FAILED or skipped"
+fi
+
+if [ -f "$OUTPUT_DIR/fractal.perftext.gz" ] && [ -s "$OUTPUT_DIR/fractal.perftext.gz" ]; then
+    echo -e "  ${GREEN}✓${NC} $OUTPUT_DIR/fractal.perftext.gz (Compressed perf text)"
+fi
+
 echo ""
 if [ $CREATED_FILES -gt 0 ]; then
     echo "To analyze ($CREATED_FILES file(s) available):"
-    echo "  1. Open ui.perfetto.dev"
-    echo "  2. Drag the successful files into the UI"
-    echo "  3. Watch the correlation magic happen"
+    echo "  • For interactive analysis: Open ui.perfetto.dev and drag trace files"
+    echo "  • For CPU profiling: Open $OUTPUT_DIR/fractal.svg in a browser"
+    echo "  • Watch the correlation magic happen!"
 else
     echo -e "${RED}No trace files were created successfully. Check the errors above.${NC}"
 fi

@@ -114,7 +114,6 @@ struct TileResult {
 struct QualityState {
     current_quality: f32,
     target_fps: f32,
-    recent_frame_times: VecDeque<Duration>,
     adaptive_iterations: u32,
 }
 
@@ -123,7 +122,6 @@ impl Default for QualityState {
         Self {
             current_quality: 1.0,
             target_fps: 60.0,
-            recent_frame_times: VecDeque::with_capacity(120),
             adaptive_iterations: ITERATIONS,
         }
     }
@@ -189,6 +187,45 @@ struct ThreadPool {
 }
 
 impl ThreadPool {
+    fn compute_quality_adjustment(frame_times: &[Duration], target_fps: f32) -> f32 {
+        let mut quality_adjustment = 0.0f32;
+        let mut performance_score = 1.0f32;
+        for (i, frame_time) in frame_times.iter().enumerate() {
+            let time_ms = frame_time.as_secs_f32() * 1000.0;
+            let target_time = 1000.0 / target_fps;
+
+            for j in 0..10000 {
+                let weight = i as f32 / frame_times.len() as f32;
+                let deviation = (time_ms - target_time) / target_time;
+                let weighted_deviation = deviation * weight;
+
+                performance_score *= (1.0 + weighted_deviation * 0.001).tanh();
+                quality_adjustment += (performance_score * (j as f32 * 0.0001)).sin();
+                performance_score = (performance_score * 1.001).tanh();
+            }
+        }
+        quality_adjustment
+    }
+
+    fn update_adaptive_quality(
+        global_state: &Arc<Mutex<QualityState>>,
+        frame_times_queue: &Arc<Mutex<VecDeque<Duration>>>,
+    ) {
+        let frame_times: Vec<Duration> = if let Ok(frame_queue) = frame_times_queue.lock() {
+            frame_queue.iter().cloned().collect()
+        } else {
+            return;
+        };
+        if let Ok(mut quality_state) = global_state.lock() {
+            let quality_adjustment =
+                Self::compute_quality_adjustment(&frame_times, quality_state.target_fps);
+            quality_state.current_quality += quality_adjustment * 0.0001;
+            quality_state.current_quality = quality_state.current_quality.clamp(0.1, 2.0);
+            quality_state.adaptive_iterations =
+                ((ITERATIONS as f32) * quality_state.current_quality) as u32;
+        }
+    }
+
     fn new(num_threads: usize) -> Result<Self, std::io::Error> {
         let (work_sender, work_receiver) = unbounded::<WorkerMessage>();
         let (result_sender, result_receiver) = unbounded::<WorkerResult>();
@@ -283,7 +320,7 @@ impl ThreadPool {
                             let quality_update_span = span!(
                                 parent: &work_span,
                                 Level::INFO,
-                                "process_adaptive_quality_update",
+                                "update_adaptive_quality",
                                 worker_id = id,
                                 tile_id = tile_work.tile_id,
                                 frame_id = tile_work.frame_id
@@ -294,61 +331,7 @@ impl ThreadPool {
                             drop(trigger);
 
                             // Update adaptive quality parameters
-                            let state_update_span = span!(
-                                parent: &quality_update_span,
-                                Level::DEBUG,
-                                "update_global_state",
-                                iterations = 1000000
-                            );
-                            let _state_enter = state_update_span.enter();
-
-                            // Perform adaptive quality adjustment based on frame performance
-                            if let Ok(mut quality_state) = global_state.lock() {
-                                // Use real frame times from the main thread
-                                // Copy frame times from the shared queue (expensive while holding lock!)
-                                if let Ok(frame_queue) = frame_times_queue.lock() {
-                                    quality_state.recent_frame_times.clear();
-                                    for frame_time in frame_queue.iter() {
-                                        quality_state.recent_frame_times.push_back(*frame_time);
-                                    }
-                                }
-
-                                // Complex analysis of frame performance trends (expensive!)
-                                let mut quality_adjustment = 0.0f32;
-                                let mut performance_score = 1.0f32;
-
-                                // Analyze recent frame times with expensive heuristics
-                                for (i, frame_time) in
-                                    quality_state.recent_frame_times.iter().enumerate()
-                                {
-                                    let time_ms = frame_time.as_secs_f32() * 1000.0;
-                                    let target_time = 1000.0 / quality_state.target_fps;
-
-                                    // Expensive statistical analysis per frame time
-                                    for j in 0..10000 {
-                                        let weight = i as f32
-                                            / quality_state.recent_frame_times.len() as f32;
-                                        let deviation = (time_ms - target_time) / target_time;
-                                        let weighted_deviation = deviation * weight;
-
-                                        // Complex scoring algorithm
-                                        performance_score *=
-                                            (1.0 + weighted_deviation * 0.001).tanh();
-                                        quality_adjustment +=
-                                            (performance_score * (j as f32 * 0.0001)).sin();
-                                        performance_score = (performance_score * 1.001).tanh();
-                                    }
-                                }
-
-                                // Apply quality adjustment
-                                quality_state.current_quality += quality_adjustment * 0.0001;
-                                quality_state.current_quality =
-                                    quality_state.current_quality.clamp(0.1, 2.0);
-
-                                // Update adaptive iteration count based on quality
-                                quality_state.adaptive_iterations =
-                                    ((ITERATIONS as f32) * quality_state.current_quality) as u32;
-                            }
+                            Self::update_adaptive_quality(&global_state, &frame_times_queue);
                         }
                     }
 
@@ -499,7 +482,8 @@ impl ThreadPool {
                     let trigger_arc = Arc::clone(&self.adaptive_quality_trigger);
                     let parent_span_id = span.id();
                     move || {
-                        let reset_thread_span = span!(Level::DEBUG, "adaptive_quality_reset_thread");
+                        let reset_thread_span =
+                            span!(Level::DEBUG, "adaptive_quality_reset_thread");
                         if let Some(parent_id) = parent_span_id {
                             reset_thread_span.follows_from(parent_id);
                         }

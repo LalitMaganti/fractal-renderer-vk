@@ -1082,7 +1082,15 @@ fn setup_tracing() {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    std::thread::current().set_name("main").ok();
+    // Set main thread name (cross-platform)
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::pthread_setname_np(libc::pthread_self(), b"main\0".as_ptr() as *const i8);
+    }
+    #[cfg(target_os = "macos")]
+    unsafe {
+        libc::pthread_setname_np(b"main\0".as_ptr() as *const i8);
+    }
     setup_tracing();
 
     let event_loop = EventLoop::new();

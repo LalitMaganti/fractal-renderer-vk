@@ -1118,9 +1118,6 @@ fn setup_tracing() {
     let perfetto_layer = tracing_perfetto::PerfettoLayer::new(
         std::fs::File::create("trace.perfetto-trace").unwrap(),
     );
-    let (_chrome_layer, _guard) = tracing_chrome::ChromeLayerBuilder::new()
-        .file("trace-chrome.json")
-        .build();
 
     // Enable both perfetto and chrome layers
     tracing_subscriber::registry()

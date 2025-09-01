@@ -5,7 +5,7 @@ use std::sync::{Arc, Barrier, Condvar, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
 
-use tracing::{Level, span, Id};
+use tracing::{Id, Level, span};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use vulkano::VulkanLibrary;
@@ -164,7 +164,7 @@ struct ThreadPool {
     completed_tiles: Arc<RwLock<HashMap<u32, HashMap<u32, TileResult>>>>, // frame_id -> tile_id -> result
     recalibration_trigger: Arc<(Mutex<bool>, Condvar)>, // System recalibration trigger
     #[allow(dead_code)] // Used by worker threads via Arc
-    global_state: Arc<Mutex<f32>>,                      // Global application state
+    global_state: Arc<Mutex<f32>>, // Global application state
 }
 
 impl ThreadPool {
@@ -263,21 +263,25 @@ impl ThreadPool {
                                 for _ in 0..1000000 {
                                     *state = (*state * 1.1).sin();
                                 }
-                                
+
                                 // Track recalibration events for debugging
                                 if tile_work.frame_id % 50 == 0 {
                                     let timestamp = std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .unwrap_or_default()
                                         .as_millis();
-                                    
+
                                     if let Ok(mut file) = std::fs::OpenOptions::new()
                                         .create(true)
                                         .append(true)
-                                        .open("/tmp/fractal_perf.log") 
+                                        .open("/tmp/fractal_perf.log")
                                     {
                                         use std::io::Write;
-                                        let _ = writeln!(file, "{},tile_{},{:.6}", timestamp, tile_work.tile_id, state);
+                                        let _ = writeln!(
+                                            file,
+                                            "{},tile_{},{:.6}",
+                                            timestamp, tile_work.tile_id, state
+                                        );
                                     }
                                 }
                             }
@@ -316,17 +320,17 @@ impl ThreadPool {
                                 for _ in 0..2000000 {
                                     *state = (*state * 1.1 + 0.1).sin();
                                 }
-                                
+
                                 // Log calibration metrics for performance analysis
                                 let timestamp = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap_or_default()
                                     .as_millis();
-                                
+
                                 if let Ok(mut file) = std::fs::OpenOptions::new()
                                     .create(true)
                                     .append(true)
-                                    .open("/tmp/fractal_perf.log") 
+                                    .open("/tmp/fractal_perf.log")
                                 {
                                     use std::io::Write;
                                     let _ = writeln!(file, "{},{},{:.6}", timestamp, id, state);
@@ -382,7 +386,6 @@ impl ThreadPool {
         }
         self.barrier.wait();
     }
-
 
     fn wait_for_frame_tiles(&self, frame_id: u32, expected_tiles: u32) -> HashMap<u32, TileResult> {
         let mut completed_count = 0;
@@ -909,15 +912,16 @@ impl VulkanRenderer {
         }
 
         // Schedule tile-based parameter computation (much lighter than fractal)
-        let tile_schedule_span = span!(Level::INFO, "schedule_tiles", frame_id = frame_id);
-        let _schedule_guard = tile_schedule_span.enter();
-        schedule_tiles_for_frame(
-            Arc::clone(&self.thread_pool),
-            frame_id,
-            params,
-            tile_schedule_span.id(),
-        );
-        drop(_schedule_guard);
+        {
+            let tile_schedule_span = span!(Level::INFO, "schedule_tiles", frame_id = frame_id);
+            let _schedule_guard = tile_schedule_span.enter();
+            schedule_tiles_for_frame(
+                Arc::clone(&self.thread_pool),
+                frame_id,
+                params,
+                tile_schedule_span.id(),
+            );
+        }
 
         // Wait for parameter tiles (now much faster)
         let total_tiles = TILES_X * TILES_Y;
@@ -1070,7 +1074,6 @@ impl VulkanRenderer {
     // Removed - no longer needed since GPU does the rendering
 
     // Removed - no longer needed since GPU does the rendering directly
-
 }
 
 fn setup_tracing() {
@@ -1079,9 +1082,7 @@ fn setup_tracing() {
     );
 
     // Enable both perfetto and chrome layers
-    tracing_subscriber::registry()
-        .with(perfetto_layer)
-        .init();
+    tracing_subscriber::registry().with(perfetto_layer).init();
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -1159,8 +1160,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let elapsed = start_time.elapsed().as_secs_f32();
 
+                // Adaptive global animation speed based on Julia set parameters
+                let base_c_real = -0.7;
+                let base_c_imag = 0.0;
+                let current_c_real = base_c_real + 0.1 * (elapsed * 0.3).sin();
+                let current_c_imag = base_c_imag + 0.1 * (elapsed * 0.2).cos();
+
+                // Calculate distance from stable Julia set parameters
+                let stability_factor =
+                    (current_c_real * current_c_real + current_c_imag * current_c_imag).sqrt();
+                let animation_speed = if stability_factor < 0.5 {
+                    0.3 // Slow in stable regions
+                } else {
+                    1.0 + stability_factor * 2.0 // Speed up in chaotic regions
+                };
+
+                let adaptive_time = elapsed * animation_speed;
+
                 let mut params = FractalParams::default();
-                params.time = elapsed;
+                params.time = adaptive_time;
                 params.zoom = 1.0;
                 params.center_x = 0.0;
                 params.center_y = 0.0;

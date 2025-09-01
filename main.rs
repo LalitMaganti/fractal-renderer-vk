@@ -1160,19 +1160,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let elapsed = start_time.elapsed().as_secs_f32();
 
-                // Adaptive global animation speed based on Julia set parameters
-                let base_c_real = -0.7;
-                let base_c_imag = 0.0;
-                let current_c_real = base_c_real + 0.1 * (elapsed * 0.3).sin();
-                let current_c_imag = base_c_imag + 0.1 * (elapsed * 0.2).cos();
-
-                // Calculate distance from stable Julia set parameters
-                let stability_factor =
-                    (current_c_real * current_c_real + current_c_imag * current_c_imag).sqrt();
-                let animation_speed = if stability_factor < 0.5 {
-                    3.0 // Speed up in stable regions
+                // Much more dramatic adaptive animation speed
+                // Use a cycling pattern to create distinct fast/slow periods
+                let cycle_position = (elapsed * 0.2).sin(); // Slow cycle
+                
+                // Map to dramatic speed differences
+                let animation_speed = if cycle_position > 0.3 {
+                    8.0 // Very fast through boring regions
+                } else if cycle_position < -0.3 {
+                    0.15 // Very slow in interesting regions  
                 } else {
-                    0.3 + (1.0 - stability_factor) * 0.7 // Slow down in chaotic regions
+                    1.0 // Normal speed during transitions
                 };
 
                 let adaptive_time = elapsed * animation_speed;

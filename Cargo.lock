@@ -1334,7 +1334,7 @@ dependencies = [
 [[package]]
 name = "tracing-perfetto"
 version = "0.1.5"
-source = "git+https://github.com/LalitMaganti/tracing-perfetto.git#9ef5dc92236998091b50723e559ccea10ae2cc9f"
+source = "git+https://github.com/LalitMaganti/tracing-perfetto.git#6cc90e8b3fe6efd5d901b36031d9fa98b6f02d5b"
 dependencies = [
  "anyhow",
  "bytes",

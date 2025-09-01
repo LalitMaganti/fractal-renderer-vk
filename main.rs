@@ -253,6 +253,7 @@ impl ThreadPool {
 
                     // Check for system recalibration (non-blocking check)
                     let recalib_check_span = span!(
+                        parent: &work_span,
                         Level::DEBUG,
                         "check_recalibration_trigger",
                         tile_id = tile_work.tile_id,
@@ -265,6 +266,7 @@ impl ThreadPool {
                             drop(_recalib_check_enter);
 
                             let recalib_span = span!(
+                                parent: &work_span,
                                 Level::INFO,
                                 "process_recalibration",
                                 worker_id = id,
@@ -277,8 +279,12 @@ impl ThreadPool {
                             drop(trigger);
 
                             // Update critical system parameters
-                            let state_update_span =
-                                span!(Level::DEBUG, "update_global_state", iterations = 1000000);
+                            let state_update_span = span!(
+                                parent: &recalib_span,
+                                Level::DEBUG,
+                                "update_global_state",
+                                iterations = 1000000
+                            );
                             let _state_enter = state_update_span.enter();
 
                             if let Ok(mut state) = global_state.lock() {
@@ -385,20 +391,25 @@ impl ThreadPool {
         tiles.remove(&frame_id).unwrap_or_default()
     }
 
-    fn trigger_system_recalibration(&self) {
-        let span = span!(Level::INFO, "trigger_system_recalibration");
+    fn trigger_system_recalibration(&self, parent_span_id: Option<Id>) {
+        let span = if let Some(parent_id) = parent_span_id {
+            span!(parent: parent_id, Level::INFO, "trigger_system_recalibration")
+        } else {
+            span!(Level::INFO, "trigger_system_recalibration")
+        };
         let _enter = span.enter();
 
         // Periodic system recalibration for accuracy
         let (lock, cvar) = &*self.recalibration_trigger;
 
-        let lock_span = span!(Level::DEBUG, "acquire_recalibration_lock");
+        let lock_span = span!(parent: &span, Level::DEBUG, "acquire_recalibration_lock");
         let _lock_enter = lock_span.enter();
 
         if let Ok(mut trigger) = lock.lock() {
             drop(_lock_enter);
 
             let notify_span = span!(
+                parent: &span,
                 Level::INFO,
                 "notify_workers_recalibration",
                 worker_count = WORKER_THREADS
@@ -411,7 +422,7 @@ impl ThreadPool {
             drop(_notify_enter);
 
             // Reset recalibration flag after processing window
-            let reset_span = span!(Level::DEBUG, "spawn_recalibration_reset_thread");
+            let reset_span = span!(parent: &span, Level::DEBUG, "spawn_recalibration_reset_thread");
             let _reset_enter = reset_span.enter();
 
             thread::Builder::new()
@@ -420,19 +431,28 @@ impl ThreadPool {
                     let trigger_arc = Arc::clone(&self.recalibration_trigger);
                     let parent_span_id = span.id();
                     move || {
-                        let reset_thread_span = span!(Level::DEBUG, "recalibration_reset_thread");
-                        if let Some(parent_id) = parent_span_id {
-                            reset_thread_span.follows_from(parent_id);
-                        }
+                        let reset_thread_span = if let Some(parent_id) = parent_span_id {
+                            span!(parent: parent_id, Level::DEBUG, "recalibration_reset_thread")
+                        } else {
+                            span!(Level::DEBUG, "recalibration_reset_thread")
+                        };
                         let _thread_enter = reset_thread_span.enter();
 
-                        let sleep_span =
-                            span!(Level::DEBUG, "recalibration_sleep", duration_ms = 500);
+                        let sleep_span = span!(
+                            parent: &reset_thread_span,
+                            Level::DEBUG,
+                            "recalibration_sleep",
+                            duration_ms = 500
+                        );
                         let _sleep_enter = sleep_span.enter();
                         thread::sleep(Duration::from_millis(500));
                         drop(_sleep_enter);
 
-                        let reset_flag_span = span!(Level::DEBUG, "reset_recalibration_flag");
+                        let reset_flag_span = span!(
+                            parent: &reset_thread_span,
+                            Level::DEBUG,
+                            "reset_recalibration_flag"
+                        );
                         let _flag_enter = reset_flag_span.enter();
                         if let Ok(mut t) = trigger_arc.0.lock() {
                             *t = false;
@@ -441,7 +461,7 @@ impl ThreadPool {
                 })
                 .ok(); // Ignore spawn errors for cleanup thread
         } else {
-            let lock_failed_span = span!(Level::WARN, "recalibration_lock_failed");
+            let lock_failed_span = span!(parent: &span, Level::WARN, "recalibration_lock_failed");
             let _failed_enter = lock_failed_span.enter();
         }
     }
@@ -929,13 +949,14 @@ impl VulkanRenderer {
         if frame_id % 240 == 180 {
             // Every ~4 seconds at 60fps
             let trigger_recalib_span = span!(
+                parent: &span,
                 Level::INFO,
                 "trigger_periodic_recalibration",
                 frame_id = frame_id,
                 frequency = "240_frames"
             );
             let _trigger_recalib_enter = trigger_recalib_span.enter();
-            self.thread_pool.trigger_system_recalibration();
+            self.thread_pool.trigger_system_recalibration(trigger_recalib_span.id());
         }
 
         // Schedule tile-based parameter computation (much lighter than fractal)

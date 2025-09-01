@@ -252,37 +252,39 @@ impl ThreadPool {
                     work_counter.fetch_add(1, Ordering::Relaxed);
 
                     // Check for system recalibration (non-blocking check)
+                    let recalib_check_span = span!(
+                        Level::DEBUG,
+                        "check_recalibration_trigger",
+                        tile_id = tile_work.tile_id,
+                        frame_id = tile_work.frame_id
+                    );
+                    let _recalib_check_enter = recalib_check_span.enter();
+
                     if let Ok(trigger) = recalib_trigger.0.try_lock() {
                         if *trigger {
+                            drop(_recalib_check_enter);
+
+                            let recalib_span = span!(
+                                Level::INFO,
+                                "process_recalibration",
+                                worker_id = id,
+                                tile_id = tile_work.tile_id,
+                                frame_id = tile_work.frame_id
+                            );
+                            let _recalib_enter = recalib_span.enter();
+
                             // System needs recalibration - update global state
                             drop(trigger);
 
                             // Update critical system parameters
+                            let state_update_span =
+                                span!(Level::DEBUG, "update_global_state", iterations = 1000000);
+                            let _state_enter = state_update_span.enter();
+
                             if let Ok(mut state) = global_state.lock() {
                                 // Perform complex state recalculation
                                 for _ in 0..1000000 {
                                     *state = (*state * 1.1).sin();
-                                }
-
-                                // Track recalibration events for debugging
-                                if tile_work.frame_id % 50 == 0 {
-                                    let timestamp = std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_millis();
-
-                                    if let Ok(mut file) = std::fs::OpenOptions::new()
-                                        .create(true)
-                                        .append(true)
-                                        .open("/tmp/fractal_perf.log")
-                                    {
-                                        use std::io::Write;
-                                        let _ = writeln!(
-                                            file,
-                                            "{},tile_{},{:.6}",
-                                            timestamp, tile_work.tile_id, state
-                                        );
-                                    }
                                 }
                             }
                         }
@@ -308,36 +310,6 @@ impl ThreadPool {
                     let _work_guard = work_span.enter();
 
                     work_counter.fetch_add(1, Ordering::Relaxed);
-
-                    // Check for system recalibration and update state
-                    if let Ok(trigger) = recalib_trigger.0.try_lock() {
-                        if *trigger {
-                            drop(trigger);
-
-                            // Update global processing state
-                            if let Ok(mut state) = global_state.lock() {
-                                // Complex state synchronization
-                                for _ in 0..2000000 {
-                                    *state = (*state * 1.1 + 0.1).sin();
-                                }
-
-                                // Log calibration metrics for performance analysis
-                                let timestamp = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_millis();
-
-                                if let Ok(mut file) = std::fs::OpenOptions::new()
-                                    .create(true)
-                                    .append(true)
-                                    .open("/tmp/fractal_perf.log")
-                                {
-                                    use std::io::Write;
-                                    let _ = writeln!(file, "{},{},{:.6}", timestamp, id, state);
-                                }
-                            }
-                        }
-                    }
 
                     // CPU-intensive data transformation
                     let processed: Vec<f32> = data
@@ -414,25 +386,63 @@ impl ThreadPool {
     }
 
     fn trigger_system_recalibration(&self) {
+        let span = span!(Level::INFO, "trigger_system_recalibration");
+        let _enter = span.enter();
+
         // Periodic system recalibration for accuracy
         let (lock, cvar) = &*self.recalibration_trigger;
+
+        let lock_span = span!(Level::DEBUG, "acquire_recalibration_lock");
+        let _lock_enter = lock_span.enter();
+
         if let Ok(mut trigger) = lock.lock() {
+            drop(_lock_enter);
+
+            let notify_span = span!(
+                Level::INFO,
+                "notify_workers_recalibration",
+                worker_count = WORKER_THREADS
+            );
+            let _notify_enter = notify_span.enter();
+
             *trigger = true;
             cvar.notify_all(); // Notify all workers of recalibration
 
+            drop(_notify_enter);
+
             // Reset recalibration flag after processing window
+            let reset_span = span!(Level::DEBUG, "spawn_recalibration_reset_thread");
+            let _reset_enter = reset_span.enter();
+
             thread::Builder::new()
                 .name("recalib-rst".to_string())
                 .spawn({
                     let trigger_arc = Arc::clone(&self.recalibration_trigger);
+                    let parent_span_id = span.id();
                     move || {
+                        let reset_thread_span = span!(Level::DEBUG, "recalibration_reset_thread");
+                        if let Some(parent_id) = parent_span_id {
+                            reset_thread_span.follows_from(parent_id);
+                        }
+                        let _thread_enter = reset_thread_span.enter();
+
+                        let sleep_span =
+                            span!(Level::DEBUG, "recalibration_sleep", duration_ms = 500);
+                        let _sleep_enter = sleep_span.enter();
                         thread::sleep(Duration::from_millis(500));
+                        drop(_sleep_enter);
+
+                        let reset_flag_span = span!(Level::DEBUG, "reset_recalibration_flag");
+                        let _flag_enter = reset_flag_span.enter();
                         if let Ok(mut t) = trigger_arc.0.lock() {
                             *t = false;
                         }
                     }
                 })
                 .ok(); // Ignore spawn errors for cleanup thread
+        } else {
+            let lock_failed_span = span!(Level::WARN, "recalibration_lock_failed");
+            let _failed_enter = lock_failed_span.enter();
         }
     }
 }
@@ -574,6 +584,8 @@ impl VulkanRenderer {
         library: &Arc<VulkanLibrary>,
         required_extensions: &vulkano::instance::InstanceExtensions,
     ) -> Result<Arc<Instance>, Box<dyn std::error::Error>> {
+        let span = span!(Level::INFO, "create_instance");
+        let _enter = span.enter();
         let create_info = InstanceCreateInfo {
             flags: InstanceCreateFlags::ENUMERATE_PORTABILITY,
             enabled_extensions: *required_extensions,
@@ -593,6 +605,8 @@ impl VulkanRenderer {
         instance: &Arc<Instance>,
         surface: &Arc<Surface>,
     ) -> Result<Arc<PhysicalDevice>, Box<dyn std::error::Error>> {
+        let span = span!(Level::INFO, "select_physical_device");
+        let _enter = span.enter();
         let physical_devices = instance.enumerate_physical_devices()?;
 
         let physical_device = physical_devices
@@ -623,6 +637,8 @@ impl VulkanRenderer {
         physical_device: Arc<PhysicalDevice>,
         surface: &Arc<Surface>,
     ) -> Result<(Arc<Device>, Arc<Queue>), Box<dyn std::error::Error>> {
+        let span = span!(Level::INFO, "create_device");
+        let _enter = span.enter();
         let queue_family_index = physical_device
             .queue_family_properties()
             .iter()
@@ -661,6 +677,8 @@ impl VulkanRenderer {
     fn create_compute_pipeline(
         device: Arc<Device>,
     ) -> Result<Arc<ComputePipeline>, Box<dyn std::error::Error>> {
+        let span = span!(Level::INFO, "create_compute_pipeline");
+        let _enter = span.enter();
         let shader = Self::load_shader(device.clone())?;
 
         let stage = PipelineShaderStageCreateInfo::new(shader.entry_point("main").unwrap());
@@ -863,6 +881,8 @@ impl VulkanRenderer {
         device: &Arc<Device>,
         surface: &Arc<Surface>,
     ) -> Result<(Arc<Swapchain>, Vec<Arc<ImageView>>), Box<dyn std::error::Error>> {
+        let span = span!(Level::INFO, "create_swapchain");
+        let _enter = span.enter();
         let surface_capabilities = device
             .physical_device()
             .surface_capabilities(surface, Default::default())?;
@@ -908,16 +928,18 @@ impl VulkanRenderer {
         // Periodic system recalibration for rendering accuracy
         if frame_id % 240 == 180 {
             // Every ~4 seconds at 60fps
+            let trigger_recalib_span = span!(
+                Level::INFO,
+                "trigger_periodic_recalibration",
+                frame_id = frame_id,
+                frequency = "240_frames"
+            );
+            let _trigger_recalib_enter = trigger_recalib_span.enter();
             self.thread_pool.trigger_system_recalibration();
         }
 
         // Schedule tile-based parameter computation (much lighter than fractal)
-        schedule_tiles_for_frame(
-            Arc::clone(&self.thread_pool),
-            frame_id,
-            params,
-            span.id(),
-        );
+        schedule_tiles_for_frame(Arc::clone(&self.thread_pool), frame_id, params, span.id());
 
         // Wait for parameter tiles (now much faster)
         let total_tiles = TILES_X * TILES_Y;
@@ -1003,6 +1025,12 @@ impl VulkanRenderer {
     }
 
     fn create_influence_map(&self, tiles: HashMap<u32, TileResult>) -> Vec<[u8; 4]> {
+        let span = span!(
+            Level::INFO,
+            "create_influence_map",
+            tile_count = tiles.len()
+        );
+        let _enter = span.enter();
         // Create a small influence map (one value per tile)
         let influence_size = (TILES_X * TILES_Y) as usize;
         let mut influence_map = vec![[128u8; 4]; influence_size];
@@ -1023,6 +1051,12 @@ impl VulkanRenderer {
         &mut self,
         cpu_data: &[[u8; 4]],
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let span = span!(
+            Level::INFO,
+            "upload_cpu_data_to_gpu",
+            data_size = cpu_data.len()
+        );
+        let _enter = span.enter();
         // Create a staging buffer to upload the CPU data
         let staging_buffer = Buffer::from_iter(
             self.memory_allocator.clone(),

@@ -739,9 +739,22 @@ impl VulkanRenderer {
                         real += cpu_influence.r * 0.1;
                         imag += cpu_influence.g * 0.1;
                         
-                        // Julia set parameters with time variation - slower animation
-                        float c_real = params.julia_c_real + 0.1 * sin(params.time * 0.3);
-                        float c_imag = params.julia_c_imag + 0.1 * cos(params.time * 0.2);
+                        // Estimate proximity to chaotic boundary for adaptive animation speed
+                        float dist_to_origin = sqrt(real * real + imag * imag);
+                        float boundary_proximity = 1.0;
+                        
+                        // Near the critical points, slow down animation
+                        if (dist_to_origin < 2.5) {
+                            boundary_proximity = 1.0 - (2.5 - dist_to_origin) / 2.5;
+                        }
+                        
+                        // Adaptive time scaling: fast in stable regions, slow near chaos
+                        float time_scale = 0.8 + 3.0 * (1.0 - boundary_proximity); // 0.8x to 3.8x speed
+                        float adaptive_time = params.time * time_scale;
+                        
+                        // Julia set parameters with adaptive time variation
+                        float c_real = params.julia_c_real + 0.1 * sin(adaptive_time * 0.3);
+                        float c_imag = params.julia_c_imag + 0.1 * cos(adaptive_time * 0.2);
                         
                         // Julia iteration
                         float z_real = real;

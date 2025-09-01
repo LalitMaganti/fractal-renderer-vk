@@ -109,6 +109,25 @@ struct TileResult {
     pixel_data: Vec<[u8; 4]>, // RGBA pixels
 }
 
+#[derive(Debug, Clone)]
+struct QualityState {
+    current_quality: f32,
+    target_fps: f32,
+    recent_frame_times: VecDeque<Duration>,
+    adaptive_iterations: u32,
+}
+
+impl Default for QualityState {
+    fn default() -> Self {
+        Self {
+            current_quality: 1.0,
+            target_fps: 60.0,
+            recent_frame_times: VecDeque::with_capacity(120),
+            adaptive_iterations: ITERATIONS,
+        }
+    }
+}
+
 // CPU-based parameter computation (simulates expensive work)
 fn compute_tile_parameters(
     tile_work: &TileWork,
@@ -162,9 +181,10 @@ struct ThreadPool {
     #[allow(dead_code)] // Used by worker threads via Arc
     work_counter: Arc<AtomicU64>,
     completed_tiles: Arc<RwLock<HashMap<u32, HashMap<u32, TileResult>>>>, // frame_id -> tile_id -> result
-    recalibration_trigger: Arc<(Mutex<bool>, Condvar)>, // System recalibration trigger
+    adaptive_quality_trigger: Arc<(Mutex<bool>, Condvar)>, // Adaptive quality update trigger
     #[allow(dead_code)] // Used by worker threads via Arc
-    global_state: Arc<Mutex<f32>>, // Global application state
+    global_state: Arc<Mutex<QualityState>>, // Global application state
+    frame_times_queue: Arc<Mutex<VecDeque<Duration>>>, // Recent frame times for quality adjustment
 }
 
 impl ThreadPool {
@@ -176,8 +196,9 @@ impl ThreadPool {
         let shutdown = Arc::new(AtomicBool::new(false));
         let work_counter = Arc::new(AtomicU64::new(0));
         let completed_tiles = Arc::new(RwLock::new(HashMap::new()));
-        let recalibration_trigger = Arc::new((Mutex::new(false), Condvar::new()));
-        let global_state = Arc::new(Mutex::new(0.0f32));
+        let adaptive_quality_trigger = Arc::new((Mutex::new(false), Condvar::new()));
+        let global_state = Arc::new(Mutex::new(QualityState::default()));
+        let frame_times_queue = Arc::new(Mutex::new(VecDeque::with_capacity(120)));
 
         let mut workers = Vec::new();
 
@@ -187,8 +208,9 @@ impl ThreadPool {
             let barrier = Arc::clone(&barrier);
             let shutdown = Arc::clone(&shutdown);
             let work_counter = Arc::clone(&work_counter);
-            let recalib_trigger = Arc::clone(&recalibration_trigger);
+            let adaptive_quality_trigger_ref = Arc::clone(&adaptive_quality_trigger);
             let global_state_ref = Arc::clone(&global_state);
+            let frame_times_queue_ref = Arc::clone(&frame_times_queue);
 
             let handle = thread::Builder::new()
                 .name(format!("worker-{}", id))
@@ -200,8 +222,9 @@ impl ThreadPool {
                         barrier,
                         shutdown,
                         work_counter,
-                        recalib_trigger,
+                        adaptive_quality_trigger_ref,
                         global_state_ref,
+                        frame_times_queue_ref,
                     );
                 })?;
 
@@ -216,8 +239,9 @@ impl ThreadPool {
             shutdown,
             work_counter,
             completed_tiles,
-            recalibration_trigger,
+            adaptive_quality_trigger,
             global_state,
+            frame_times_queue,
         })
     }
 
@@ -228,8 +252,9 @@ impl ThreadPool {
         barrier: Arc<Barrier>,
         shutdown: Arc<AtomicBool>,
         work_counter: Arc<AtomicU64>,
-        recalib_trigger: Arc<(Mutex<bool>, Condvar)>,
-        global_state: Arc<Mutex<f32>>,
+        adaptive_quality_trigger: Arc<(Mutex<bool>, Condvar)>,
+        global_state: Arc<Mutex<QualityState>>,
+        frame_times_queue: Arc<Mutex<VecDeque<Duration>>>,
     ) {
         while !shutdown.load(Ordering::Relaxed) {
             let msg = receiver.recv();
@@ -251,37 +276,77 @@ impl ThreadPool {
                     let _work_guard = work_span.enter();
                     work_counter.fetch_add(1, Ordering::Relaxed);
 
-                    // Check for system recalibration (non-blocking check)
-                    if let Ok(trigger) = recalib_trigger.0.try_lock() {
+                    // Check for adaptive quality update (non-blocking check)
+                    if let Ok(trigger) = adaptive_quality_trigger.0.try_lock() {
                         if *trigger {
-
-                            let recalib_span = span!(
+                            let quality_update_span = span!(
                                 parent: &work_span,
                                 Level::INFO,
-                                "process_recalibration",
+                                "process_adaptive_quality_update",
                                 worker_id = id,
                                 tile_id = tile_work.tile_id,
                                 frame_id = tile_work.frame_id
                             );
-                            let _recalib_enter = recalib_span.enter();
+                            let _quality_update_enter = quality_update_span.enter();
 
-                            // System needs recalibration - update global state
+                            // System needs adaptive quality update - update global state
                             drop(trigger);
 
-                            // Update critical system parameters
+                            // Update adaptive quality parameters
                             let state_update_span = span!(
-                                parent: &recalib_span,
+                                parent: &quality_update_span,
                                 Level::DEBUG,
                                 "update_global_state",
                                 iterations = 1000000
                             );
                             let _state_enter = state_update_span.enter();
 
-                            if let Ok(mut state) = global_state.lock() {
-                                // Perform complex state recalculation
-                                for _ in 0..1000000 {
-                                    *state = (*state * 1.1).sin();
+                            // Perform adaptive quality adjustment based on frame performance
+                            if let Ok(mut quality_state) = global_state.lock() {
+                                // Use real frame times from the main thread
+                                // Copy frame times from the shared queue (expensive while holding lock!)
+                                if let Ok(frame_queue) = frame_times_queue.lock() {
+                                    quality_state.recent_frame_times.clear();
+                                    for frame_time in frame_queue.iter() {
+                                        quality_state.recent_frame_times.push_back(*frame_time);
+                                    }
                                 }
+
+                                // Complex analysis of frame performance trends (expensive!)
+                                let mut quality_adjustment = 0.0f32;
+                                let mut performance_score = 1.0f32;
+
+                                // Analyze recent frame times with expensive heuristics
+                                for (i, frame_time) in
+                                    quality_state.recent_frame_times.iter().enumerate()
+                                {
+                                    let time_ms = frame_time.as_secs_f32() * 1000.0;
+                                    let target_time = 1000.0 / quality_state.target_fps;
+
+                                    // Expensive statistical analysis per frame time
+                                    for j in 0..10000 {
+                                        let weight = i as f32
+                                            / quality_state.recent_frame_times.len() as f32;
+                                        let deviation = (time_ms - target_time) / target_time;
+                                        let weighted_deviation = deviation * weight;
+
+                                        // Complex scoring algorithm
+                                        performance_score *=
+                                            (1.0 + weighted_deviation * 0.001).tanh();
+                                        quality_adjustment +=
+                                            (performance_score * (j as f32 * 0.0001)).sin();
+                                        performance_score = (performance_score * 1.001).tanh();
+                                    }
+                                }
+
+                                // Apply quality adjustment
+                                quality_state.current_quality += quality_adjustment * 0.0001;
+                                quality_state.current_quality =
+                                    quality_state.current_quality.clamp(0.1, 2.0);
+
+                                // Update adaptive iteration count based on quality
+                                quality_state.adaptive_iterations =
+                                    ((ITERATIONS as f32) * quality_state.current_quality) as u32;
                             }
                         }
                     }
@@ -347,6 +412,23 @@ impl ThreadPool {
         self.sender.send(msg).unwrap();
     }
 
+    fn submit_frame_time(&self, frame_time: Duration) {
+        if let Ok(mut queue) = self.frame_times_queue.lock() {
+            queue.push_back(frame_time);
+            if queue.len() > 120 {
+                queue.pop_front();
+            }
+        }
+    }
+
+    fn get_current_quality(&self) -> f32 {
+        if let Ok(state) = self.global_state.lock() {
+            state.current_quality
+        } else {
+            1.0 // Default quality if lock fails
+        }
+    }
+
     #[allow(dead_code)] // Used for periodic synchronization
     fn synchronize(&self, sync_id: u32) {
         for _ in 0..WORKER_THREADS {
@@ -381,14 +463,14 @@ impl ThreadPool {
         tiles.remove(&frame_id).unwrap_or_default()
     }
 
-    fn trigger_system_recalibration(&self) {
-        let span = span!(Level::INFO, "trigger_system_recalibration");
+    fn trigger_adaptive_quality_update(&self) {
+        let span = span!(Level::INFO, "trigger_adaptive_quality_update");
         let _enter = span.enter();
 
-        // Periodic system recalibration for accuracy
-        let (lock, cvar) = &*self.recalibration_trigger;
+        // Periodic adaptive quality update for performance optimization
+        let (lock, cvar) = &*self.adaptive_quality_trigger;
 
-        let lock_span = span!(Level::DEBUG, "acquire_recalibration_lock");
+        let lock_span = span!(Level::DEBUG, "acquire_adaptive_quality_lock");
         let _lock_enter = lock_span.enter();
 
         if let Ok(mut trigger) = lock.lock() {
@@ -396,39 +478,39 @@ impl ThreadPool {
 
             let notify_span = span!(
                 Level::INFO,
-                "notify_workers_recalibration",
+                "notify_workers_adaptive_quality",
                 worker_count = WORKER_THREADS
             );
             let _notify_enter = notify_span.enter();
 
             *trigger = true;
-            cvar.notify_all(); // Notify all workers of recalibration
+            cvar.notify_all(); // Notify all workers of adaptive quality update
 
             drop(_notify_enter);
 
-            // Reset recalibration flag after processing window
-            let reset_span = span!(Level::DEBUG, "spawn_recalibration_reset_thread");
+            // Reset adaptive quality flag after processing window
+            let reset_span = span!(Level::DEBUG, "spawn_quality_reset_thread");
             let _reset_enter = reset_span.enter();
 
             thread::Builder::new()
-                .name("recalib-rst".to_string())
+                .name("quality-rst".to_string())
                 .spawn({
-                    let trigger_arc = Arc::clone(&self.recalibration_trigger);
+                    let trigger_arc = Arc::clone(&self.adaptive_quality_trigger);
                     let parent_span_id = span.id();
                     move || {
-                        let reset_thread_span = span!(Level::DEBUG, "recalibration_reset_thread");
+                        let reset_thread_span = span!(Level::DEBUG, "adaptive_quality_reset_thread");
                         if let Some(parent_id) = parent_span_id {
                             reset_thread_span.follows_from(parent_id);
                         }
                         let _thread_enter = reset_thread_span.enter();
 
                         let sleep_span =
-                            span!(Level::DEBUG, "recalibration_sleep", duration_ms = 500);
+                            span!(Level::DEBUG, "adaptive_quality_sleep", duration_ms = 500);
                         let _sleep_enter = sleep_span.enter();
                         thread::sleep(Duration::from_millis(500));
                         drop(_sleep_enter);
 
-                        let reset_flag_span = span!(Level::DEBUG, "reset_recalibration_flag");
+                        let reset_flag_span = span!(Level::DEBUG, "reset_adaptive_quality_flag");
                         let _flag_enter = reset_flag_span.enter();
                         if let Ok(mut t) = trigger_arc.0.lock() {
                             *t = false;
@@ -910,25 +992,37 @@ impl VulkanRenderer {
         Ok((swapchain, swapchain_images))
     }
 
+    pub fn update_frame_timing(&self, frame_time: Duration) {
+        self.thread_pool.submit_frame_time(frame_time);
+    }
+
     pub fn render_frame(
         &mut self,
         frame_id: u32,
-        params: FractalParams,
+        mut params: FractalParams,
+        frame_time: Duration,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let span = span!(Level::INFO, "render_frame", frame_id = frame_id);
         let _enter = span.enter();
 
-        // Periodic system recalibration for rendering accuracy
+        // Submit frame timing for adaptive quality system
+        self.update_frame_timing(frame_time);
+
+        // Apply adaptive quality to fractal parameters
+        let quality = self.thread_pool.get_current_quality();
+        params.max_iterations = ((params.max_iterations as f32) * quality).max(16.0) as u32;
+
+        // Periodic adaptive quality update for rendering performance
         if frame_id % 240 == 180 {
             // Every ~4 seconds at 60fps
-            let trigger_recalib_span = span!(
+            let trigger_quality_span = span!(
                 Level::INFO,
-                "trigger_periodic_recalibration",
+                "trigger_periodic_adaptive_quality",
                 frame_id = frame_id,
                 frequency = "240_frames"
             );
-            let _trigger_recalib_enter = trigger_recalib_span.enter();
-            self.thread_pool.trigger_system_recalibration();
+            let _trigger_quality_enter = trigger_quality_span.enter();
+            self.thread_pool.trigger_adaptive_quality_update();
         }
 
         // Schedule tile-based parameter computation (much lighter than fractal)
@@ -1189,7 +1283,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 params.center_x = 0.0;
                 params.center_y = 0.0;
 
-                if let Err(_e) = renderer.render_frame(frame_count, params) {
+                if let Err(_e) = renderer.render_frame(frame_count, params, frame_time) {
                     // Silently handle render errors
                 }
 

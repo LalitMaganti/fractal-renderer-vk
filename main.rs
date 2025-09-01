@@ -1166,9 +1166,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 
                 // Map to dramatic speed differences
                 let animation_speed = if cycle_position > 0.3 {
-                    8.0 // Very fast through boring regions
+                    0.15 // Very slow in interesting regions
                 } else if cycle_position < -0.3 {
-                    0.15 // Very slow in interesting regions  
+                    8.0 // Very fast through boring regions
                 } else {
                     1.0 // Normal speed during transitions
                 };

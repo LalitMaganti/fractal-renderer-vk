@@ -1170,9 +1170,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let stability_factor =
                     (current_c_real * current_c_real + current_c_imag * current_c_imag).sqrt();
                 let animation_speed = if stability_factor < 0.5 {
-                    0.3 // Slow in stable regions
+                    3.0 // Speed up in stable regions
                 } else {
-                    1.0 + stability_factor * 2.0 // Speed up in chaotic regions
+                    0.3 + (1.0 - stability_factor) * 0.7 // Slow down in chaotic regions
                 };
 
                 let adaptive_time = elapsed * animation_speed;

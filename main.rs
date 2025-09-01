@@ -1156,23 +1156,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let elapsed = start_time.elapsed().as_secs_f32();
 
-                // Much more dramatic adaptive animation speed
-                // Use a cycling pattern to create distinct fast/slow periods
-                let cycle_position = (elapsed * 0.2).sin(); // Slow cycle
-
-                // Map to dramatic speed differences
-                let animation_speed = if cycle_position > 0.3 {
-                    0.15 // Very slow in interesting regions
-                } else if cycle_position < -0.3 {
-                    8.0 // Very fast through boring regions
-                } else {
-                    1.0 // Normal speed during transitions
-                };
-
-                let adaptive_time = elapsed * animation_speed;
-
                 let mut params = FractalParams::default();
-                params.time = adaptive_time;
+                params.time = elapsed * 3.0;
                 params.zoom = 1.0;
                 params.center_x = 0.0;
                 params.center_y = 0.0;

@@ -3,7 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier, Condvar, Mutex, RwLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tracing::{Level, Span, span};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -80,6 +80,7 @@ impl Default for FractalParams {
 enum WorkerMessage {
     ComputeTile(TileWork),
     PreprocessData(Vec<f32>, Option<Span>),
+    #[allow(dead_code)] // Used for worker synchronization
     Synchronize(u32),
     Shutdown,
 }
@@ -92,11 +93,12 @@ struct TileWork {
     parent_span: Option<Span>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 enum WorkerResult {
     TileComplete(TileResult),
+    #[allow(dead_code)] // Sent but handled generically in result processing
     DataProcessed(Vec<f32>),
+    #[allow(dead_code)] // Sent but handled generically in result processing
     SyncComplete(u32),
 }
 
@@ -154,13 +156,14 @@ struct ThreadPool {
     workers: Vec<thread::JoinHandle<()>>,
     sender: Sender<WorkerMessage>,
     result_receiver: Receiver<WorkerResult>,
+    #[allow(dead_code)] // Used by worker threads via Arc
     barrier: Arc<Barrier>,
     shutdown: Arc<AtomicBool>,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Used by worker threads via Arc
     work_counter: Arc<AtomicU64>,
     completed_tiles: Arc<RwLock<HashMap<u32, HashMap<u32, TileResult>>>>, // frame_id -> tile_id -> result
     recalibration_trigger: Arc<(Mutex<bool>, Condvar)>, // System recalibration trigger
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Used by worker threads via Arc
     global_state: Arc<Mutex<f32>>,                      // Global application state
 }
 
@@ -372,6 +375,7 @@ impl ThreadPool {
         self.sender.send(msg).unwrap();
     }
 
+    #[allow(dead_code)] // Used for periodic synchronization
     fn synchronize(&self, sync_id: u32) {
         for _ in 0..WORKER_THREADS {
             self.submit_work(WorkerMessage::Synchronize(sync_id));
@@ -379,10 +383,6 @@ impl ThreadPool {
         self.barrier.wait();
     }
 
-    #[allow(dead_code)]
-    fn get_work_count(&self) -> u64 {
-        self.work_counter.load(Ordering::Relaxed)
-    }
 
     fn wait_for_frame_tiles(&self, frame_id: u32, expected_tiles: u32) -> HashMap<u32, TileResult> {
         let mut completed_count = 0;
@@ -1068,52 +1068,6 @@ impl VulkanRenderer {
 
     // Removed - no longer needed since GPU does the rendering directly
 
-    #[allow(dead_code)]
-    pub fn benchmark(&mut self, frames: u32) -> Result<(), Box<dyn std::error::Error>> {
-        let mut params = FractalParams::default();
-        let start_time = Instant::now();
-
-        // Spawn monitoring thread
-        let work_counter = Arc::clone(&self.thread_pool.work_counter);
-        let monitor_handle = thread::spawn(move || {
-            loop {
-                thread::sleep(Duration::from_secs(1));
-                let current_count = work_counter.load(Ordering::Relaxed);
-                if current_count > (frames as u64 * 3) {
-                    break;
-                }
-            }
-        });
-
-        for frame in 0..frames {
-            params.time = frame as f32 * 0.016; // Simulate 60 FPS timing
-            params.zoom = 1.0 + (params.time * 0.03).sin() * 0.5;
-            params.center_x = (params.time * 0.015).cos() * 0.3;
-            params.center_y = (params.time * 0.01).sin() * 0.3;
-
-            if frame % 10 == 0 {
-                // Synchronize all threads periodically
-                self.thread_pool.synchronize(frame);
-            }
-
-            self.render_frame(frame, params)?;
-
-            // Add some thread contention
-            if frame % 5 == 0 {
-                let work_data = vec![frame as f32; 5000];
-                self.thread_pool
-                    .submit_work(WorkerMessage::PreprocessData(work_data, None));
-            }
-        }
-
-        let elapsed = start_time.elapsed();
-        let _fps = frames as f64 / elapsed.as_secs_f64();
-        let _total_work = self.thread_pool.get_work_count();
-
-        monitor_handle.join().ok();
-
-        Ok(())
-    }
 }
 
 fn setup_tracing() {
@@ -1139,8 +1093,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // FPS tracking variables
     let mut fps_timer = std::time::Instant::now();
     let mut fps_frame_count = 0u32;
-    #[allow(unused_assignments)]
-    let mut current_fps = 0.0f32;
     let mut frame_times = VecDeque::with_capacity(60);
     let mut last_frame_time = std::time::Instant::now();
 
@@ -1175,7 +1127,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Update FPS counter every second
                 fps_frame_count += 1;
                 if fps_timer.elapsed().as_secs_f32() >= 1.0 {
-                    current_fps = fps_frame_count as f32 / fps_timer.elapsed().as_secs_f32();
+                    let current_fps = fps_frame_count as f32 / fps_timer.elapsed().as_secs_f32();
                     fps_frame_count = 0;
                     fps_timer = std::time::Instant::now();
 

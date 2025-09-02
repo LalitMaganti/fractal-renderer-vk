@@ -40,8 +40,8 @@ PERF_STDERR=$(mktemp)
 
 # Run the fractal binary with error capture
 # Capture perf's stderr separately to diagnose perf issues
-# --call-graph=dwarf enables unwind tables for better stack traces
-{ perf record -k mono -g --call-graph=dwarf -o "$OUTPUT_DIR/perf.data" -- \
+# --call-graph=fp uses frame pointers for unwinding (faster, needs force-frame-pointers=yes)
+{ perf record -k mono -g --call-graph=fp -F 997 -o "$OUTPUT_DIR/perf.data" -- \
     "$FRACTAL_BIN" --trace "$OUTPUT_DIR/fractal.pftrace" > "$FRACTAL_STDOUT" 2> "$FRACTAL_STDERR"; } 2> "$PERF_STDERR" &
 PERF_PID=$!
 

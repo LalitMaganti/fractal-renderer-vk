@@ -1183,7 +1183,8 @@ fn setup_tracing(trace_file: Option<String>) {
         let perfetto_layer = tracing_perfetto::PerfettoLayer::new(
             std::fs::File::create(file_path).expect("Failed to create trace file"),
         )
-        .with_clock_type(tracing_perfetto::ClockType::TryMonotonic);
+        .with_clock_type(tracing_perfetto::ClockType::TryMonotonic)
+        .with_debug_annotations(true);
 
         // Enable perfetto tracing with custom file using monotonic clock
         tracing_subscriber::registry().with(perfetto_layer).init();

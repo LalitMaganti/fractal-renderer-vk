@@ -290,9 +290,9 @@ impl ThreadPool {
         barrier: Arc<Barrier>,
         shutdown: Arc<AtomicBool>,
         work_counter: Arc<AtomicU64>,
-        adaptive_quality_trigger: Arc<(Mutex<bool>, Condvar)>,
-        global_state: Arc<Mutex<QualityState>>,
-        frame_times_queue: Arc<Mutex<VecDeque<Duration>>>,
+        _adaptive_quality_trigger: Arc<(Mutex<bool>, Condvar)>,
+        _global_state: Arc<Mutex<QualityState>>,
+        _frame_times_queue: Arc<Mutex<VecDeque<Duration>>>,
     ) {
         while !shutdown.load(Ordering::Relaxed) {
             let msg = receiver.recv();
@@ -314,26 +314,8 @@ impl ThreadPool {
                     let _work_guard = work_span.enter();
                     work_counter.fetch_add(1, Ordering::Relaxed);
 
-                    // Check for adaptive quality update (non-blocking check)
-                    if let Ok(trigger) = adaptive_quality_trigger.0.try_lock() {
-                        if *trigger {
-                            let quality_update_span = span!(
-                                parent: &work_span,
-                                Level::INFO,
-                                "update_adaptive_quality",
-                                worker_id = id,
-                                tile_id = tile_work.tile_id,
-                                frame_id = tile_work.frame_id
-                            );
-                            let _quality_update_enter = quality_update_span.enter();
-
-                            // System needs adaptive quality update - update global state
-                            drop(trigger);
-
-                            // Update adaptive quality parameters
-                            Self::update_adaptive_quality(&global_state, &frame_times_queue);
-                        }
-                    }
+                    // Worker threads should not handle quality updates - that's the main thread's job
+                    // This avoids expensive computation on worker threads and potential contention
 
                     // Compute tile parameters on CPU
                     let result = compute_tile_parameters(&tile_work, None);
@@ -451,59 +433,27 @@ impl ThreadPool {
         let span = span!(Level::INFO, "trigger_adaptive_quality_update");
         let _enter = span.enter();
 
-        // Periodic adaptive quality update for performance optimization
-        let (lock, cvar) = &*self.adaptive_quality_trigger;
+        // Spawn a dedicated background thread for quality computation
+        // This avoids blocking main thread or worker threads
+        thread::Builder::new()
+            .name("quality-compute".to_string())
+            .spawn({
+                let global_state = Arc::clone(&self.global_state);
+                let frame_times_queue = Arc::clone(&self.frame_times_queue);
+                let parent_span_id = span.id();
 
-        let lock_span = span!(Level::DEBUG, "acquire_adaptive_quality_lock");
-        let _lock_enter = lock_span.enter();
-
-        if let Ok(mut trigger) = lock.lock() {
-            drop(_lock_enter);
-
-            let notify_span = span!(
-                Level::INFO,
-                "notify_workers_adaptive_quality",
-                worker_count = WORKER_THREADS
-            );
-            let _notify_enter = notify_span.enter();
-
-            *trigger = true;
-            cvar.notify_all(); // Notify all workers of adaptive quality update
-
-            drop(_notify_enter);
-
-            // Reset adaptive quality flag after processing window
-            let reset_span = span!(Level::DEBUG, "spawn_quality_reset_thread");
-            let _reset_enter = reset_span.enter();
-
-            thread::Builder::new()
-                .name("quality-rst".to_string())
-                .spawn({
-                    let trigger_arc = Arc::clone(&self.adaptive_quality_trigger);
-                    let parent_span_id = span.id();
-                    move || {
-                        let reset_thread_span =
-                            span!(Level::DEBUG, "adaptive_quality_reset_thread");
-                        if let Some(parent_id) = parent_span_id {
-                            reset_thread_span.follows_from(parent_id);
-                        }
-                        let _thread_enter = reset_thread_span.enter();
-
-                        let sleep_span =
-                            span!(Level::DEBUG, "adaptive_quality_sleep", duration_ms = 500);
-                        let _sleep_enter = sleep_span.enter();
-                        thread::sleep(Duration::from_millis(500));
-                        drop(_sleep_enter);
-
-                        let reset_flag_span = span!(Level::DEBUG, "reset_adaptive_quality_flag");
-                        let _flag_enter = reset_flag_span.enter();
-                        if let Ok(mut t) = trigger_arc.0.lock() {
-                            *t = false;
-                        }
+                move || {
+                    let compute_span = span!(Level::INFO, "adaptive_quality_compute_background");
+                    if let Some(parent_id) = parent_span_id {
+                        compute_span.follows_from(parent_id);
                     }
-                })
-                .ok(); // Ignore spawn errors for cleanup thread
-        }
+                    let _compute_enter = compute_span.enter();
+
+                    // Perform expensive quality computation on dedicated thread
+                    Self::update_adaptive_quality(&global_state, &frame_times_queue);
+                }
+            })
+            .ok(); // Fire and forget - quality updates are not critical path
     }
 }
 

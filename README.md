@@ -11,24 +11,28 @@ using Perfetto UI's multi-source trace correlation capabilities.
 
 ### 🔍 The Mystery to Solve
 
-**Key Performance Issue**: The current code has a classic lock contention
-problem in `main.rs:219-226` where expensive computation
-(`compute_quality_adjustment` with 10,000-iteration loops) is performed while
-holding a mutex lock. This creates significant contention between worker
-threads.
+**Key Performance Issue**: The current code has a multi-layered performance
+problem where expensive computation (`compute_quality_adjustment` with
+10,000-iteration loops) is:
+1. Performed while holding a mutex lock (`main.rs:219-226`)
+2. Running on worker threads meant for tile processing
+3. Causing thread pool contention and resource misuse
 
 **The Discovery Journey**: Using Perfetto UI, you'll correlate:
 
-- **Application traces** showing long mutex hold times
-- **CPU profiles** revealing threads blocked on locks
+- **Application traces** showing worker threads doing wrong work
+- **CPU profiles** revealing lock contention and thread blocking
 - **Scheduler traces** showing excessive context switching
-- **Timeline correlation** revealing the root cause
+- **Timeline correlation** revealing cascading performance impacts
 
-**The Fix**: Commit
-[`b9e6764`](https://github.com/LalitMaganti/vulkan-tile-renderer-rs/commit/b9e6764)
-shows the proper solution - moving expensive computation outside the lock.
-However, we intentionally keep the broken version so attendees can discover the
-issue themselves.
+**The Progressive Fix**:
+- Commit [`b9e6764`](https://github.com/LalitMaganti/vulkan-tile-renderer-rs/commit/b9e6764): 
+  Partial fix - moves computation outside the lock
+- Commit [`a23358b`](https://github.com/LalitMaganti/vulkan-tile-renderer-rs/commit/a23358b): 
+  Complete fix - moves computation to dedicated background thread
+
+However, we intentionally revert these fixes to preserve the performance issues
+for live discovery during the talk.
 
 ## 🚀 Quick Start
 

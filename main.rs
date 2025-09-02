@@ -216,17 +216,9 @@ impl ThreadPool {
         } else {
             return;
         };
-        // Compute quality adjustment outside the lock to avoid holding it during expensive computation
-        let quality_adjustment = if let Ok(quality_state) = global_state.lock() {
-            let target_fps = quality_state.target_fps;
-            drop(quality_state); // Release lock immediately
-            Self::compute_quality_adjustment(&frame_times, target_fps)
-        } else {
-            0.0
-        };
-
-        // Now apply the computed adjustment with a brief lock
         if let Ok(mut quality_state) = global_state.lock() {
+            let quality_adjustment =
+                Self::compute_quality_adjustment(&frame_times, quality_state.target_fps);
             quality_state.current_quality += quality_adjustment * 0.0001;
             quality_state.current_quality = quality_state.current_quality.clamp(0.1, 2.0);
             quality_state.adaptive_iterations =

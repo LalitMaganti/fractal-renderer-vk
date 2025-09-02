@@ -153,6 +153,25 @@ fi
 rm -f "$OUTPUT_DIR/fractal.dat"
 rm -f "$OUTPUT_DIR/perf.data"
 
+echo -e "${YELLOW}Step 6: Compressing all trace files...${NC}"
+
+# Compress all trace files (overwrite existing .gz files)
+for file in "$OUTPUT_DIR/fractal.sched" "$OUTPUT_DIR/fractal.pftrace"; do
+    if [ -f "$file" ] && [ -s "$file" ]; then
+        echo "  Compressing $(basename "$file")..."
+        if gzip -f "$file" 2>/dev/null; then
+            echo -e "  ${GREEN}✓${NC} Compressed: $file.gz"
+        else
+            echo -e "  ${YELLOW}Warning: Failed to compress $file${NC}"
+        fi
+    fi
+done
+
+# Note: fractal.perftext.gz was already created earlier, and fractal.perftext will be removed below
+if [ -f "$OUTPUT_DIR/fractal.perftext" ]; then
+    rm -f "$OUTPUT_DIR/fractal.perftext"
+fi
+
 echo -e "${GREEN}✓ Trace collection complete!${NC}"
 echo ""
 
@@ -160,25 +179,25 @@ echo ""
 CREATED_FILES=0
 echo "Files ready for Perfetto UI:"
 
-if [ -f "$OUTPUT_DIR/fractal.perftext" ] && [ -s "$OUTPUT_DIR/fractal.perftext" ]; then
-    echo -e "  ${GREEN}✓${NC} $OUTPUT_DIR/fractal.perftext   (CPU profiling)"
+if [ -f "$OUTPUT_DIR/fractal.perftext.gz" ] && [ -s "$OUTPUT_DIR/fractal.perftext.gz" ]; then
+    echo -e "  ${GREEN}✓${NC} $OUTPUT_DIR/fractal.perftext.gz (CPU profiling)"
     CREATED_FILES=$((CREATED_FILES + 1))
 else
-    echo -e "  ${RED}✗${NC} $OUTPUT_DIR/fractal.perftext   (CPU profiling) - FAILED"
+    echo -e "  ${RED}✗${NC} $OUTPUT_DIR/fractal.perftext.gz (CPU profiling) - FAILED"
 fi
 
-if [ -f "$OUTPUT_DIR/fractal.sched" ] && [ -s "$OUTPUT_DIR/fractal.sched" ]; then
-    echo -e "  ${GREEN}✓${NC} $OUTPUT_DIR/fractal.sched       (Scheduler events)"
+if [ -f "$OUTPUT_DIR/fractal.sched.gz" ] && [ -s "$OUTPUT_DIR/fractal.sched.gz" ]; then
+    echo -e "  ${GREEN}✓${NC} $OUTPUT_DIR/fractal.sched.gz     (Scheduler events)"
     CREATED_FILES=$((CREATED_FILES + 1))
 else
-    echo -e "  ${RED}✗${NC} $OUTPUT_DIR/fractal.sched       (Scheduler events) - FAILED"
+    echo -e "  ${RED}✗${NC} $OUTPUT_DIR/fractal.sched.gz     (Scheduler events) - FAILED"
 fi
 
-if [ -f "$OUTPUT_DIR/fractal.pftrace" ] && [ -s "$OUTPUT_DIR/fractal.pftrace" ]; then
-    echo -e "  ${GREEN}✓${NC} $OUTPUT_DIR/fractal.pftrace     (Application trace)"
+if [ -f "$OUTPUT_DIR/fractal.pftrace.gz" ] && [ -s "$OUTPUT_DIR/fractal.pftrace.gz" ]; then
+    echo -e "  ${GREEN}✓${NC} $OUTPUT_DIR/fractal.pftrace.gz   (Application trace)"
     CREATED_FILES=$((CREATED_FILES + 1))
 else
-    echo -e "  ${RED}✗${NC} $OUTPUT_DIR/fractal.pftrace     (Application trace) - FAILED"
+    echo -e "  ${RED}✗${NC} $OUTPUT_DIR/fractal.pftrace.gz   (Application trace) - FAILED"
 fi
 
 if [ -f "$OUTPUT_DIR/fractal.svg" ] && [ -s "$OUTPUT_DIR/fractal.svg" ]; then
@@ -186,10 +205,6 @@ if [ -f "$OUTPUT_DIR/fractal.svg" ] && [ -s "$OUTPUT_DIR/fractal.svg" ]; then
     CREATED_FILES=$((CREATED_FILES + 1))
 else
     echo -e "  ${RED}✗${NC} $OUTPUT_DIR/fractal.svg         (Flamegraph) - FAILED or skipped"
-fi
-
-if [ -f "$OUTPUT_DIR/fractal.perftext.gz" ] && [ -s "$OUTPUT_DIR/fractal.perftext.gz" ]; then
-    echo -e "  ${GREEN}✓${NC} $OUTPUT_DIR/fractal.perftext.gz (Compressed perf text)"
 fi
 
 echo ""

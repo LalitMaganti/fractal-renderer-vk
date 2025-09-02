@@ -1,7 +1,7 @@
 # Multi-threaded GPU Fractal Renderer
 
 **Demo project for Linux Tracing Summit 2025 talk**:
-[_"Unifying Performance Analysis: Using Perfetto UI to Merge Multiple Linux Tracing Sources"_](https://cfp.tracingsummit.org/ts2025/talk/TKVU8W/)
+[_"Perfetto: The Swiss Army Knife of Linux Client/Embedded Tracing"_](https://cfp.tracingsummit.org/ts2025/talk/TKVU8W/)
 
 ## 🎯 What This Demo Is About
 
